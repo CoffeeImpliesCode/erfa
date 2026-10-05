@@ -1,0 +1,71 @@
+# Upstream's ignore rules, preserved verbatim.
+#
+# liberfa/erfa `.gitignore` at the pinned commit
+# 1a8044cde5b7763295d472a6443387239127c6c8, all 24 patterns in their original
+# order. None was removed, reordered relative to another, or weakened. These
+# are autotools artefacts this fork never produces -- it compiles the library
+# with Zig and never runs `bootstrap.sh`, `configure` or `make` -- and they are
+# kept because upstream's own tree depends on them, not because this build
+# needs them.
+/aclocal.m4
+/autom4te.cache/
+/config.*
+/configure
+/depcomp
+/erfa.pc
+/install-sh
+/libtool
+/ltmain.sh
+/m4/
+/missing
+/stamp-h?
+/test-driver
+.deps/
+.dirstamp
+.libs/
+*.l[ao]
+*.o
+*~
+Makefile
+Makefile.in
+/build-aux
+src/t_erfa_c
+erfa-*.tar.gz
+
+# Re-inclusion: upstream's `/m4/` above is broad enough to swallow
+# `m4/erfa-numver.m4`, which is upstream *source*, not a build artefact. That
+# file records the rule that splits `PACKAGE_VERSION` into the three numeric
+# macros this package's generated `config.h` carries
+# (m4/erfa-numver.m4:22-24, matching configure.ac:5 and meson.build:3), it is
+# listed in build.zig.zon's `.paths`, and its SHA-256 is a record in
+# UPSTREAM.sha256. Dropping the pattern would delete a file the integrity gate
+# checks; keeping the pattern without this exception would stop that file from
+# being tracked at all. Both the rule and the file stand.
+!/m4/
+!/m4/erfa-numver.m4
+
+# This fork's own build outputs.
+#
+# `/config.*` above already covers a root `config.h`, but this build never
+# writes one into the source tree: `config.h` is generated into the Zig build
+# cache by `addWriteFiles` and put on the include path from there, so there is
+# nothing in this directory for that rule to catch. `.zig-cache/`,
+# `zig-out/` and `zig-pkg/` are this fork's outputs and are excluded from
+# `.paths` in build.zig.zon for the same reason.
+/.zig-cache/
+/zig-out/
+/zig-pkg/
+# The consumer package is a separate Zig package with its own build root, so
+# it has its own three. Anchored at `consumer/` because these names are
+# unanchored elsewhere in this file's upstream half only where upstream needed
+# them to be.
+/consumer/.zig-cache/
+/consumer/zig-out/
+/consumer/zig-pkg/
+
+# Nothing else is ignored. In particular the fork's own sources and records --
+# `zig/`, `build.zig`, `build.zig.zon`, `cross-test.profile.sh`, `tests.zig`,
+# `smoke.zig`, `consumer/src/`, `UPSTREAM.md`, `UPSTREAM.sha256`, `NOTICE.md`,
+# `README.zig.md`, `FORK-NOTES.md`, `CHANGELOG.md` and
+# `.github/workflows/verify.yml` -- match no pattern above, and `make`, the
+# autotools output name, matches no file in this tree.

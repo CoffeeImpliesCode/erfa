@@ -1,0 +1,676 @@
+# Verification for this fork of ERFA.
+#
+# Upstream ships `.github/workflows/ci_workflows.yml`, which drives the
+# autotools and meson flows on upstream's own hosted runners. It is retained
+# byte-for-byte as upstream material and it is NOT this fork's gate: this
+# package never runs autoreconf, configure, make or meson. None of it is
+# retargeted here. This file is the fork's gates and names only this
+# repository.
+#
+# Six jobs, six different questions:
+#   provenance  are ERFA's licence and relicensing record intact and recorded,
+#               is the pinned upstream commit still in this history, and is
+#               every carried upstream file byte-identical to that commit
+#   native      does the 249-unit core build directly from Zig, do the upstream
+#               validation suite and the public tests pass in Debug and
+#               ReleaseSafe, and does the smoke example execute and check its
+#               own answers on this host
+#   c-surface   do the *installed* archive and the *installed* public headers
+#               compile, link and run from outside the build graph
+#   shared      is the other delivery real: the same 249 sources as a shared
+#               object with upstream's own soname and version links, its export
+#               surface, and an installed C consumer that links the shared
+#               object rather than the archive
+#   cross       do the raw C module, the typed facade, the tests, the smoke
+#               example and the upstream test programs compile for each of the
+#               six required targets, with no target skipped and none
+#               pre-judged -- and then five of them again through
+#               `-Dlinkage=dynamic`, because a shared object is a new artefact
+#               class rather than a linkage flip. The sixth is not in that
+#               matrix and cannot be: `wasm32-wasi`'s OS has no dynamic
+#               linker, so the shared build refuses it rather than delivering a
+#               different artefact
+#   consumer    does the published module resolve from a package that did not
+#               write it, against the static delivery and then the shared one
+#
+# Every job installs Zig 0.16.0 through setup-zig. The bare `zig` on a runner's
+# PATH is not used as a version-bearing shim.
+#
+# There is deliberately no system-integration job: this wave ships no system
+# mode, so there is no system gate to run and none is claimed. `erfa.pc.in` is
+# retained upstream material and is never executed by autotools here; the Zig
+# graph substitutes its placeholders itself to write the installed
+# `lib/pkgconfig/erfa.pc`, and `zig build install` is what writes it.
+#
+# The 53-platform cross-test matrix is a host-side gate driven by
+# `$HOME/.local/bin/cross-test` from the package root; it is not reproduced here
+# because no hosted runner provides those platforms. A workflow entry that
+# named a subset and called it the matrix would be a false gate.
+
+name: verify
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  ZIG_VERSION: "0.16.0"
+  # The upstream commit this package is prepared from, read out of the upstream
+  # checkout's ref file. Named here as well as in UPSTREAM.md so that the
+  # provenance job and a reader of this file cannot disagree.
+  UPSTREAM_COMMIT: "1a8044cde5b7763295d472a6443387239127c6c8"
+
+jobs:
+  provenance:
+    name: licence and provenance
+    runs-on: ubuntu-latest
+    steps:
+      # This is the only job that reads git history.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # `zig build install` reads several of these straight out of the source
+      # tree -- NOTICE.md, FORK-LICENSE.md, UPSTREAM.md and README.upstream.md
+      # all become installed files -- so an absent one is not only a missing
+      # document but an install that cannot produce its own licence material.
+      - name: Fork records are present and non-empty
+        run: |
+          set -eu
+          for f in NOTICE.md UPSTREAM.md CHANGELOG.md FORK-NOTES.md FORK-LICENSE.md \
+                   README.md README.upstream.md README.zig.md UPSTREAM.sha256; do
+            test -s "$f" || { echo "missing or empty: $f" >&2; exit 1; }
+          done
+          # The packaging this SDK ships, and the provider route's source.
+          for f in package.nix flake.nix devenv.nix devenv.yaml runtime/graph.zig \
+                   runtime/library.zig; do
+            test -s "$f" || { echo "missing or empty: $f" >&2; exit 1; }
+          done
+
+      # `.paths` is what a fetched or packaged copy actually receives, and the
+      # install step reads files out of it. A path that is installed but not
+      # listed is a package that cannot install its own licence records, which
+      # no other job here would notice.
+      - name: Every installed file is inside the package manifest's .paths
+        run: |
+          set -eu
+          for f in NOTICE.md FORK-LICENSE.md UPSTREAM.md README.upstream.md \
+                   README.rst LICENSE INFO; do
+            grep -qxF "\"$f\"," build.zig.zon || {
+              echo "$f is installed by build.zig but is not in .paths" >&2
+              exit 1
+            }
+          done
+          for d in runtime; do
+            grep -qxF "\"$d\"," build.zig.zon || {
+              echo "$d is imported by build.zig but is not in .paths" >&2
+              exit 1
+            }
+          done
+
+      - name: The pinned upstream commit is in this history
+        run: |
+          set -eu
+          if ! git cat-file -e "$UPSTREAM_COMMIT^{commit}"; then
+            echo "pinned upstream commit $UPSTREAM_COMMIT is missing from this clone" >&2
+            echo "see UPSTREAM.md section 1; re-fetch before changing the pin" >&2
+            exit 1
+          fi
+          echo "$UPSTREAM_COMMIT is present"
+
+      # A private downstream removes no upstream obligation, and ERFA's
+      # obligation is unusual: the grant is in LICENSE, and the authority for
+      # the grant itself -- the SOFA Board's relicensing permission, with its
+      # two conditions -- is a separate file. Both must survive, and the record
+      # has to name both.
+      - name: Licence and relicensing authority are shipped and recorded
+        run: |
+          set -eu
+          for f in LICENSE INFO; do
+            test -s "$f" || { echo "missing upstream text: $f" >&2; exit 1; }
+            grep -q "$f" NOTICE.md || {
+              echo "NOTICE.md does not name $f" >&2
+              echo "INFO is the relicensing authority; a record that omits it is incomplete" >&2
+              exit 1
+            }
+          done
+          # The three-clause grant and its no-endorsement clause, both verbatim
+          # in LICENSE. Clause 3 is the term most easily lost in a repackage.
+          grep -q 'Neither the name of the Standards Of Fundamental Astronomy Board' LICENSE
+          grep -q 'endorse or promote products derived from this software' LICENSE
+
+      # Every retained upstream file, unmodified. The path set is the pinned
+      # commit's own file list, so a fork-authored file cannot enter the
+      # manifest by accident and cannot be checked here either.
+      - name: Retained upstream material integrity
+        run: sha256sum -c UPSTREAM.sha256
+
+      # `.gitignore` is the one carried upstream file this fork edits, and it is
+      # deliberately absent from UPSTREAM.sha256: upstream's own 24 patterns are
+      # kept byte-for-byte and in order, and the fork appends re-inclusions plus
+      # its Zig build-output patterns. Keeping it in the manifest at the
+      # upstream digest would make `sha256sum -c` fail on a recorded, intended
+      # deviation; rewriting the digest to match the edited bytes would hide it.
+      # So the deviation is checked as a deviation instead.
+      - name: The .gitignore deviation is recorded, and nothing else is
+        run: |
+          set -eu
+          if grep -q '^[0-9a-f]\{64\}  \.gitignore$' UPSTREAM.sha256; then
+            echo ".gitignore must not be in UPSTREAM.sha256: it is a recorded deviation" >&2
+            exit 1
+          fi
+          grep -q 'DEVIATION -- .gitignore is deliberately ABSENT' UPSTREAM.sha256
+          grep -q '`.gitignore`' NOTICE.md
+          for p in /aclocal.m4 /autom4te.cache/ /config.* /configure /depcomp \
+                   /erfa.pc /install-sh /libtool /ltmain.sh /m4/ /missing \
+                   /stamp-h? /test-driver .deps/ .dirstamp .libs/ '*.l[ao]' \
+                   '*.o' '*~' Makefile Makefile.in /build-aux src/t_erfa_c \
+                   'erfa-*.tar.gz'; do
+            grep -qxF "$p" .gitignore || {
+              echo "upstream .gitignore pattern missing or reordered: $p" >&2
+              exit 1
+            }
+          done
+          echo ".gitignore: all 24 upstream patterns present in original order; append recorded"
+
+      # Every other carried upstream path must be byte-identical to the pin.
+      # `.gitignore` is absent here and handled by the step above; `.github/` is
+      # absent because this workflow is a new file beside upstream's own
+      # `ci_workflows.yml`, which is untouched and IS in the manifest.
+      # No native source is ever patched in this package; a failure here means
+      # a native byte changed, and the fix is to restore it, not to re-record a
+      # digest over the edit.
+      - name: Upstream sources are unmodified
+        run: |
+          set -eu
+          changed=$(git diff --name-only "$UPSTREAM_COMMIT" -- \
+            src m4 INFO LICENSE README.rst RELEASE.rst \
+            bootstrap.sh configure.ac erfa.pc.in Makefile.am meson.build)
+          if [ -n "$changed" ]; then
+            echo "upstream files were modified:" >&2
+            echo "$changed" >&2
+            echo "native sources are never patched in this package; see FORK-NOTES.md" >&2
+            exit 1
+          fi
+          echo "every carried upstream file is byte-identical to $UPSTREAM_COMMIT"
+
+  native:
+    name: native build, tests, smoke and check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: ${{ env.ZIG_VERSION }}
+
+      # The whole point of this job: 249 upstream translation units compiled
+      # directly by Zig from this tree, with a deterministic generated
+      # config.h, and no autotools, meson, Make, CMake or download anywhere in
+      # the graph.
+      #
+      # A bare `zig build` runs the install step, so it names an explicit
+      # `--prefix`: the install lands on the runner's own scratch disk instead
+      # of writing `zig-out/` into the checkout. Nothing in this job reads the
+      # installed tree back, and the steps below install nothing, so they carry
+      # no prefix.
+      - name: Build
+        run: zig build --prefix "$RUNNER_TEMP/erfa-default" --summary all
+
+      # Debug is where an uninitialised read or a slice-out-of-bounds is loud;
+      # ReleaseSafe is where the same code has to survive the optimizer without
+      # the checks it would otherwise have had.
+      - name: Test (Debug)
+        run: zig build test --summary all
+
+      - name: Test (ReleaseSafe)
+        run: zig build test -Doptimize=ReleaseSafe --summary all
+
+      # Upstream's own validation programs, built and run as they upstream
+      # runs them. They are C, they need no fixture files, and they return a
+      # non-zero exit status on failure, so their exit code is the result.
+      # This is a reference-oracle result, not a substitute for the public Zig
+      # facade's tests.
+      - name: Upstream validation suite (t_erfa_c, t_erfa_c_extra)
+        run: zig build upstream-test --summary all
+
+      # The example fixes its expected values by hand and exits non-zero on any
+      # disagreement, so its exit code is the semantic check.
+      - name: Smoke
+        run: zig build smoke --summary all
+
+      # With no -Dtarget this compiles all six required targets in one graph.
+      # The cross job repeats the same compiles one target per matrix entry;
+      # between them they cover both paths through build.zig.
+      - name: Check (whole matrix in one graph)
+        run: zig build check --summary all
+
+  c-surface:
+    name: installed C archive and public headers
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: ${{ env.ZIG_VERSION }}
+
+      # The Zig facade reads the translated header from inside the build graph,
+      # so only a program outside that graph can prove the install is complete.
+      #
+      # A bare `zig build` runs the install step, so it names an explicit
+      # `--prefix` on the runner's own scratch disk rather than writing
+      # `zig-out/` into the checkout. Every check below reads that same prefix.
+      - name: Build and install
+        run: zig build --prefix "$RUNNER_TEMP/erfa-static" --summary all
+
+      # The default delivery is still `liberfa.a`, byte for byte the artefact
+      # this graph produced before `-Dlinkage` existed, and the rest of the
+      # install travels with it: the four headers under their own names, the
+      # pkg-config metadata that describes the tree it sits in, and every
+      # carried licence and provenance record. A private downstream removes no
+      # upstream obligation, so `LICENSE` and `INFO` have to be here: `INFO` is
+      # the SOFA Board's relicensing permission, which is the authority for the
+      # grant rather than another licence, and a package that ships one without
+      # the other has removed an obligation.
+      - name: the default install is complete
+        run: |
+          set -euo pipefail
+          dest="$RUNNER_TEMP/erfa-static"
+          test -f "$dest/lib/liberfa.a"
+          for h in erfa.h erfam.h erfaextra.h erfadatextra.h; do
+            test -f "$dest/include/$h" || { echo "FAIL missing $h" >&2; exit 1; }
+          done
+          test -f "$dest/LICENSE"
+          test -f "$dest/INFO"
+          test -f "$dest/lib/pkgconfig/erfa.pc"
+          grep -q '^prefix=\${pcfiledir}/\.\./\.\.$' "$dest/lib/pkgconfig/erfa.pc"
+          grep -q '^Libs: -L${libdir} -lerfa$' "$dest/lib/pkgconfig/erfa.pc"
+          grep -q '^Libs.private: -lm$' "$dest/lib/pkgconfig/erfa.pc"
+          grep -q '^Version: 2\.0\.1$' "$dest/lib/pkgconfig/erfa.pc"
+          for f in LICENSE INFO NOTICE.md FORK-LICENSE.md UPSTREAM.md; do
+            test -f "$dest/share/licenses/erfa/$f" || {
+              echo "FAIL missing carried record $f" >&2; exit 1; }
+          done
+          for f in README.upstream.md README.rst; do
+            test -f "$dest/share/doc/erfa/$f" || {
+              echo "FAIL missing shipped documentation $f" >&2; exit 1; }
+          done
+
+      # ERFA's public C API is 255 functions across four headers, and the two
+      # headers a caller needs together are erfa.h and erfam.h: erfa.h does not
+      # include erfam.h (upstream made that explicit in 2.0.0). This consumer
+      # includes both, calls one routine from each of the four headers, and
+      # checks real values -- which is the point, because a facade that
+      # installed erfa.h without erfam.h would fail to compile right here.
+      #
+      # The two expected values are the constants ERFA itself defines in
+      # erfam.h for the same quantities, so this compares the installed header
+      # against the installed archive rather than against itself: ERFA_DJM0 is
+      # the MJD zero point that eraCal2jd must write, and ERFA_DAYSEC is the
+      # nominal day length. A wrong constant or a missing macro fails to
+      # compile; a wrong archive fails at link or run time.
+      - name: public C surface compiles, links and runs
+        run: |
+          set -euo pipefail
+          dest="$RUNNER_TEMP/erfa-static"
+          cat > "$RUNNER_TEMP/c_surface.c" <<'C'
+          #include <erfa.h>
+          #include <erfam.h>
+          #include <erfaextra.h>
+          #include <erfadatextra.h>
+          #include <stdio.h>
+
+          int main(void) {
+              double djm0 = 0.0, djm = 0.0, delat = 0.0;
+
+              /* A valid calendar date yields the MJD zero point and day. */
+              if (eraCal2jd(2017, 1, 1, &djm0, &djm) != 0) return 1;
+              if (djm0 != ERFA_DJM0) return 2;
+              if (djm != 57754.0) return 7;
+
+              /* eraDat returns 0 and writes TAI-UTC. The table's last entry is
+                 2017 January 1 at 37.0 s, so a 2017 date cannot be a dubious
+                 year and must not warn. */
+              if (eraDat(2017, 1, 1, 0.0, &delat) != 0) return 3;
+              if (delat <= 36.9 || delat >= 37.1) return 4;
+
+              /* erfaextra.h contributes the version declaration; erfadatextra.h
+                 must also compile as part of the four installed headers. */
+              if (eraVersionMajor() < 2) return 5;
+
+              /* The macros really are macro constants, and one of them is the
+                 nominal length of a day in SI seconds. */
+              if (ERFA_DAYSEC != 86400.0) return 6;
+
+              printf("public C surface compiled, linked and ran\n");
+              return 0;
+          }
+          C
+          zig cc -std=c11 \
+            -I "$dest/include" \
+            "$RUNNER_TEMP/c_surface.c" \
+            "$dest/lib/liberfa.a" \
+            -lm \
+            -o "$RUNNER_TEMP/c_surface"
+          "$RUNNER_TEMP/c_surface"
+
+  # The other delivery. `zig build` with no option has always produced
+  # `lib erfa.a`, so the shared object is a new artefact class rather than a
+  # linkage flip, and the gates that observe the static one say nothing about
+  # it. This job is that separate attempt.
+  shared:
+    name: shared object, export surface and installed shared consumer
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: ${{ env.ZIG_VERSION }}
+
+      # As in `c-surface`: a bare `zig build` runs the install step, so the
+      # prefix is named and lands on the runner's own scratch disk rather than
+      # writing `zig-out/` into the checkout. Every check below reads that
+      # prefix.
+      - name: Build and install the shared object
+        run: zig build -Dlinkage=dynamic --prefix "$RUNNER_TEMP/erfa-shared" --summary all
+
+      # The soname and the version links are upstream's own, not this build's
+      # invention: `configure.ac:20` records `ERFA_LIB_VERSION_INFO(9, 1, 8)`
+      # and `meson.build:10-20` applies libtool's `(C - A).A.R` rule to it, so
+      # the installed file is `liberfa.so.1.8.1` with `liberfa.so.1` beside it
+      # and `liberfa.so` resolving `-lerfa` for a consumer. The link metadata
+      # and the carried records are part of the install too, because a library
+      # with no `-l` to resolve and no licence beside it is a source drop.
+      - name: the installed shared object carries upstream's soname and links
+        run: |
+          set -euo pipefail
+          dest="$RUNNER_TEMP/erfa-shared"
+          test -f "$dest/lib/liberfa.so.1.8.1"
+          test -L "$dest/lib/liberfa.so.1"
+          test -L "$dest/lib/liberfa.so"
+          readelf -d "$dest/lib/liberfa.so.1.8.1" | grep -q 'SONAME.*liberfa\.so\.1'
+          # libm is the one external link dependency both of upstream's build
+          # systems name, and the core calls into it.
+          readelf -d "$dest/lib/liberfa.so.1.8.1" | grep -q 'NEEDED.*libm'
+          test -f "$dest/lib/pkgconfig/erfa.pc"
+          test -f "$dest/include/erfa.h"
+          test -f "$dest/include/erfam.h"
+          test -f "$dest/include/erfaextra.h"
+          test -f "$dest/include/erfadatextra.h"
+          for f in LICENSE INFO NOTICE.md FORK-LICENSE.md UPSTREAM.md; do
+            test -f "$dest/share/licenses/erfa/$f" || {
+              echo "FAIL  missing carried record $f" >&2; exit 1; }
+          done
+          # The .pc file describes the tree it travels with rather than the
+          # directory this build happened to run in.
+          grep -q '^prefix=\${pcfiledir}/\.\./\.\.$' "$dest/lib/pkgconfig/erfa.pc"
+          PKG_CONFIG_PATH="$dest/lib/pkgconfig" pkg-config --cflags --libs erfa
+
+      # ERFA ships no export macro and no version script, so the shared object
+      # exports exactly what the four installed headers declare: the 255
+      # `era*` entry points. The core's only other file-scope objects are the
+      # two `static ERFA_THREAD_LOCAL` leap-second variables of
+      # `src/erfadatextra.c:22-23`, which have internal linkage, so they must
+      # not appear here at all.
+      #
+      # The check is membership rather than a count, because the linker adds
+      # symbols of its own (`_init`, `_fini`, `_edata`, `__bss_start`,
+      # `_end`) on some targets and none on others, and a count would turn
+      # that into a spurious failure. What has to hold is that every declared
+      # entry point is exported and that nothing of ERFA's own is exported
+      # that the headers do not declare.
+      - name: the export surface is the header's and nothing else
+        run: |
+          set -euo pipefail
+          lib="$RUNNER_TEMP/erfa-shared/lib/liberfa.so.1.8.1"
+
+          # The header's own list, read out of the installed include tree so
+          # this compares the declarations against the exports and not against
+          # a list written here.
+          grep -ohE '\b(era[A-Za-z0-9_]*)[[:space:]]*\(' \
+            src/erfa.h src/erfaextra.h src/erfadatextra.h \
+            | sed -E 's/[[:space:]]*\($//' | sort -u > "$RUNNER_TEMP/declared.txt"
+          wc -l < "$RUNNER_TEMP/declared.txt"
+
+          nm -D --defined-only "$lib" \
+            | awk '$2 ~ /^[TWDBRGV]$/ { print $3 }' | sort -u > "$RUNNER_TEMP/exported.txt"
+
+          # Every declared entry point is exported.
+          missing=$(comm -23 "$RUNNER_TEMP/declared.txt" "$RUNNER_TEMP/exported.txt")
+          if [ -n "$missing" ]; then
+            echo "declared but not exported:" >&2
+            echo "$missing" >&2
+            exit 1
+          fi
+
+          # Nothing of ERFA's own is exported that the headers do not declare.
+          # The six names in the filter are the linker section markers, not
+          # library symbols; they are named rather than assumed absent.
+          extra=$(comm -13 "$RUNNER_TEMP/declared.txt" "$RUNNER_TEMP/exported.txt" \
+            | grep -vE '^(_init|_fini|_edata|__bss_start|_end|__end__)$' || true)
+          if [ -n "$extra" ]; then
+            echo "exported but not declared by the installed headers:" >&2
+            echo "$extra" >&2
+            exit 1
+          fi
+
+          # The leap-second state is reached through eraGetLeapSeconds,
+          # eraSetLeapSeconds and eraDatini. Its two variables are internal,
+          # and this is where that is checked rather than asserted.
+          if grep -qxE '(changes|NDAT)' "$RUNNER_TEMP/exported.txt"; then
+            echo "the internal leap-second state is exported" >&2
+            exit 1
+          fi
+
+      # The installed consumer, this time against the shared object. The same
+      # program and the same expectations as `c-surface`, so the only thing
+      # that differs is which library it is linked to -- which is exactly the
+      # thing under test.
+      - name: the installed public C surface links the shared object and runs
+        run: |
+          set -euo pipefail
+          cat > "$RUNNER_TEMP/c_surface_shared.c" <<'C'
+          #include <erfa.h>
+          #include <erfam.h>
+          #include <erfaextra.h>
+          #include <erfadatextra.h>
+          #include <stdio.h>
+
+          int main(void) {
+              double djm0 = 0.0, djm = 0.0, delat = 0.0;
+
+              /* An independent known answer: eraCal2jd on a valid date writes
+                 ERFA_DJM0 and the day number the header itself defines. */
+              if (eraCal2jd(2017, 1, 1, &djm0, &djm) != 0) return 1;
+              if (djm0 != ERFA_DJM0) return 2;
+              if (djm != 57754.0) return 3;
+
+              /* eraJd2cal reads back what eraCal2jd wrote, so this pair is a
+                 statement about the shared object and not about a header.
+                 `fd` is the fraction inside the day and the date rolls at its
+                 end -- upstream's own t_jd2cal shows eraJd2cal(2400000.5,
+                 50123.9999) giving 1996-02-10 with fd 0.9999 -- so a whole
+                 day number gives fd exactly zero. */
+              {
+                  int iy = 0, im = 0, id = 0;
+                  double fd = 0.0;
+                  if (eraJd2cal(djm0, djm, &iy, &im, &id, &fd) != 0) return 4;
+                  if (iy != 2017 || im != 1 || id != 1 || fd != 0.0) return 5;
+              }
+
+              /* eraDat returns 0 and writes TAI-UTC; the table's last entry is
+                 2017 January 1 at 37.0 s, so a 2017 date cannot be a dubious
+                 year and must not warn. */
+              if (eraDat(2017, 1, 1, 0.0, &delat) != 0) return 6;
+              if (delat <= 36.9 || delat >= 37.1) return 7;
+
+              /* erfaextra.h contributes the version declaration and
+                 erfadatextra.h has to compile as part of the four installed
+                 headers, so both are exercised here. */
+              if (eraVersionMajor() != 2) return 8;
+              if (eraSofaVersion()[0] == '\0') return 9;
+
+              printf("public C surface linked the shared object and ran\n");
+              return 0;
+          }
+          C
+          PKG_CONFIG_PATH="$RUNNER_TEMP/erfa-shared/lib/pkgconfig"
+          export PKG_CONFIG_PATH
+          # Link through pkg-config, not through a path typed here: that is
+          # what proves the installed metadata describes the installed library.
+          zig cc -std=c11 \
+            "$RUNNER_TEMP/c_surface_shared.c" \
+            $(pkg-config --cflags --libs erfa) \
+            -Wl,-rpath,"$RUNNER_TEMP/erfa-shared/lib" \
+            -o "$RUNNER_TEMP/c_surface_shared"
+          "$RUNNER_TEMP/c_surface_shared"
+
+      # The behavioural gates run again against the shared object, at both
+      # optimize modes the repository's own history records for the static
+      # one, because a delivery that only links is not a delivery that works.
+      - name: Test (shared object, Debug)
+        run: zig build test -Dlinkage=dynamic --summary all
+
+      - name: Test (shared object, ReleaseSafe)
+        run: zig build test -Dlinkage=dynamic -Doptimize=ReleaseSafe --summary all
+
+      - name: Upstream validation suite (shared object)
+        run: zig build upstream-test -Dlinkage=dynamic --summary all
+
+      - name: Smoke (shared object)
+        run: zig build smoke -Dlinkage=dynamic --summary all
+
+  # The six required targets again through `-Dlinkage=dynamic`, for the same
+  # reason the `shared` job exists: a shared object is a new artifact class,
+  # not a linkage flip, so "the static graph compiles for this target" says
+  # nothing about whether the shared one does.
+  #
+  # `wasm32-wasi` is the one entry that cannot be here. Its OS has no dynamic
+  # linker, so there is no shared object to build for it, and this build
+  # refuses `-Dlinkage=dynamic` for that target rather than answering with an
+  # archive the caller did not ask for. That refusal is the correct behaviour,
+  # and the step below observes it: a matrix row expecting a successful shared
+  # check for that target would be asking the build to do the thing it
+  # deliberately does not do. The static delivery for that target is an
+  # ordinary build, and the same step confirms it still is one.
+  #
+  # Five matrix entries, five separate steps, no tolerated failure.
+  cross-shared:
+    name: shared check ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - x86_64-linux-gnu
+          - aarch64-linux-gnu
+          - aarch64-macos-none
+          - x86_64-windows-gnu
+          - riscv64-linux-gnu
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: ${{ env.ZIG_VERSION }}
+
+      - name: check x86_64-linux-gnu
+        run: zig build check -Dlinkage=dynamic -Dtarget=x86_64-linux-gnu --summary all
+
+      - name: check aarch64-linux-gnu
+        run: zig build check -Dlinkage=dynamic -Dtarget=aarch64-linux-gnu --summary all
+
+      - name: check aarch64-macos-none
+        run: zig build check -Dlinkage=dynamic -Dtarget=aarch64-macos-none --summary all
+
+      - name: check x86_64-windows-gnu
+        run: zig build check -Dlinkage=dynamic -Dtarget=x86_64-windows-gnu --summary all
+
+      - name: check riscv64-linux-gnu
+        run: zig build check -Dlinkage=dynamic -Dtarget=riscv64-linux-gnu --summary all
+
+      # Not a matrix row: it is a different assertion. `wasm32-wasi` has no
+      # dynamic linker, so this build cannot produce the artefact that was
+      # requested there and says so at configure time instead of producing the
+      # other one. The check is that the request is refused, which is a
+      # behavioural property of the build and not a restatement of a comment:
+      # a non-zero exit with the target named, and no archive handed back as if
+      # the request had been met.
+      - name: wasm32-wasi refuses a shared object it cannot carry
+        run: |
+          set -euo pipefail
+          if zig build check -Dlinkage=dynamic -Dtarget=wasm32-wasi --summary all; then
+            echo "FAIL: -Dlinkage=dynamic was accepted for wasm32-wasi, whose OS has no dynamic linker" >&2
+            exit 1
+          fi
+          # The default delivery for the same target is an ordinary build and
+          # stays covered by `cross`; this confirms the refusal is about the
+          # requested linkage and not about the target being buildable.
+          zig build check -Dtarget=wasm32-wasi --summary all
+
+  cross:
+    name: check ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    strategy:
+      # Every target reports. One target's failure must not hide the state of
+      # the other five.
+      fail-fast: false
+      matrix:
+        target:
+          - x86_64-linux-gnu
+          - aarch64-linux-gnu
+          - aarch64-macos-none
+          - x86_64-windows-gnu
+          - riscv64-linux-gnu
+          - wasm32-wasi
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: ${{ env.ZIG_VERSION }}
+
+      # Compiled, never executed: no emulator and no cross linker is assumed.
+      # An explicit -Dtarget narrows the check to this matrix entry, so this is
+      # one target's real attempt rather than a rerun of the whole matrix under
+      # a different name.
+      #
+      # A successful foreign compile is `build_only`, not a passing test. Two
+      # questions in this matrix are open by design and are reported as they
+      # come out, never pre-judged: whether the ERFA_THREAD_LOCAL chain selects
+      # `__thread` on wasm32-wasi, and whether the libc-less aarch64-macos-none
+      # target supplies math.h, string.h, stdlib.h and float.h at all.
+      #
+      # There is no `continue-on-error` and no pre-judgement in the build
+      # script. If a target cannot be built here, that is the finding.
+      - name: Compile the raw C module, the facade, the tests and the example
+        run: zig build check -Dtarget=${{ matrix.target }} --summary all
+
+  consumer:
+    name: downstream consumer package
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: ${{ env.ZIG_VERSION }}
+
+      # The failure this catches is the one the library's own gates cannot see:
+      # a module that builds from the inside and does not resolve from outside.
+      # consumer/ reaches the package through b.dependency() by relative path,
+      # so this needs no registry entry and no network.
+      #
+      # It runs twice, once per delivery, because `consumer/build.zig` forwards
+      # `-Dlinkage` to `b.dependency("erfa", ...)` unchanged: a module that
+      # resolves against the archive and not against the shared object is half
+      # a self-containment proof. The static run is first and is what passing
+      # nothing has always meant here.
+      - name: run (static archive, the library's own default)
+        working-directory: consumer
+        run: zig build run --summary all
+
+      - name: run (shared object)
+        working-directory: consumer
+        run: zig build run -Dlinkage=dynamic --summary all

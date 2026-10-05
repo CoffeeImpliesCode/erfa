@@ -1,0 +1,15 @@
+inputs:
+  # The nixpkgs this development environment resolves against. Pinned by
+  # revision rather than by `rolling`, so re-running `devenv shell` months from
+  # now resolves the same tree instead of a newer one. The rev is the
+  # devenv-nixpkgs generation this workspace already uses, and its
+  # nixpkgs-src resolves to the same rev flake.nix names.
+  #
+  # `devenv.lock` is NOT written here. Lock files belong to the driver, who will
+  # record the narHash for this input from an observed `devenv.lock`.
+  nixpkgs:
+    url: github:cachix/devenv-nixpkgs/c2f38fe7f9e04d9aadd354d380f2bd40531d9737
+
+# No allow-import-from-elsewhere and no extra inputs: this project is standalone
+# and imports no sibling. `./package.nix` is consumed with `pkgs.callPackage`,
+# which needs no allow rule because the file is inside the project.
