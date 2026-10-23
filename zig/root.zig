@@ -398,7 +398,7 @@ comptime {
 /// Reinterpret `Pv` as `double [2][3]`; callers use this for read-only C inputs.
 /// `pvstar` receives a mutable copy because upstream changes its velocity member.
 inline fn pvPointer(pv: *const Pv) [*c][3]f64 {
-    return @constCast(@ptrCast(pv));
+    return @ptrCast(@constCast(pv));
 }
 
 /// Result of a date conversion; `date` is absent when upstream writes no output.
