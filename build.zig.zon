@@ -106,7 +106,6 @@
 
         // Upstream's own CI configuration, kept as upstream wrote it and not
         // run by this fork; `.github/workflows/verify.yml` is this fork's own.
-        ".github",
 
         "README.rst",
         "RELEASE.rst",
