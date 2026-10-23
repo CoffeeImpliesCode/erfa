@@ -1,8 +1,3 @@
-# The two linkage variants live here, not in package.nix: package.nix returns one
-# derivation and takes `linkage` as an argument. `default` is the SDK's own
-# policy — build.zig delivered a static archive before -Dlinkage existed.
-#
-# flake.lock is the driver's to write; this flake has none until it does.
 
 {
   description = "ERFA — Essential Routines for Fundamental Astronomy, packaged for Zig 0.16";
@@ -33,7 +28,6 @@
         shared = mkErfa pkgs "dynamic";
       });
 
-      # Convenience only; devenv is the canonical environment.
       devShells = forAllSystems (pkgs: {
         default = pkgs.mkShell { packages = [ pkgs.zig_0_16 ]; };
       });

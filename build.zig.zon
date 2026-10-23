@@ -1,94 +1,27 @@
 .{
-    // The package name a dependent writes as `erfa` in `b.dependency`, and the
-    // name of the module it then reaches as `dep.module("erfa")`. Both are
-    // this wave's fixed contract identity.
     .name = .erfa,
-    // The library version this package compiles and reports.
-    //
-    // This tree is upstream master at `1a8044cde5b7763295d472a6443387239127c6c8`,
-    // which is 12 commits *past* the v2.0.1 tag
-    // (`9915ba38c9365f8b0738269b8c2ac1fdd5f8dee3`), so this string cannot read
-    // as a released version: the only functional change since the tag is the
-    // thread-local leap-second state in `src/erfadatextra.c`, which no release
-    // carries and which is the reason this fork exists. A SemVer build-metadata
-    // suffix cannot hold a commit and a bare `2.0.1` would claim a release this
-    // tree is not, so the commit prefix rides in the pre-release field, as it
-    // does for the `ryu` package pinned the same way.
-    //
-    // The C library's own version macros are unaffected and stay exactly what
-    // upstream records: `eraVersion()` returns "2.0.1" and `config.h` carries
-    // `PACKAGE_VERSION "2.0.1"`, because those come from `configure.ac:5` and
-    // `meson.build:3` and are generated, not taken from this field.
     .version = "2.0.1-dev.1a8044cd",
-    // Reported by the pinned Zig 0.16.0 compiler for this package; the receipt
-    // belongs in FORK-NOTES.md, which the provenance owner writes from the
-    // observed output. It identifies this fork and is not derived from any
-    // upstream Zig package, because upstream ships no Zig package to fork.
     .fingerprint = 0x73dbf9fce1bf2002, // Changing this has security and trust implications.
     .minimum_zig_version = "0.16.0",
 
-    // The C library is compiled from this repository: the 249 core translation
-    // units `src/Makefile.am:2-35` names, the four headers upstream installs,
-    // and a generated `config.h` written into the build cache. Upstream's
-    // canonical repository is a Git clone with history and every one of those
-    // files comes from that clone, so there is no network dependency to
-    // declare and nothing is fetched at build time.
     .dependencies = .{},
 
     .paths = .{
-        // This package's own build graph, this manifest, and the matrix
-        // driver's settings profile. The profile is configuration rather than
-        // prose: it is a Bash file `cross-test` sources when it is run from
-        // this package root, so it travels with the package for anyone
-        // reproducing the run and has to be inside `.paths` or a fetched copy
-        // of the package would silently fall back to the harness defaults.
         "build.zig",
         "build.zig.zon",
         "cross-test.profile.sh",
 
-        // The fork's Zig-facing source: the facade root, the facade exercise
-        // that makes `check` a check of the facade, and the aggregate header
-        // this build translates.
         "zig",
 
-        // The root test and smoke roots.
         "tests.zig",
         "smoke.zig",
 
-        // The separate consumer package. It lives inside this repository so
-        // its dependency on this package resolves as a relative path, with no
-        // registry entry and no network fetch.
-        //
-        // Its three files, named one by one, and not the `consumer` directory.
-        // This build's own `consumer` step compiles `consumer/src/main.zig`
-        // inside the parent graph (build.zig:659-672) and therefore never
-        // writes into that directory, but the consumer is a package in its own
-        // right: building it with its own manifest creates
-        // `consumer/.zig-cache` and `consumer/zig-out` unless that build is
-        // given an explicit `--cache-dir`. Listing the directory would carry
-        // both into every fetched copy and make the package hash change as a
-        // side effect of building it. Naming the three files is what makes the
-        // allowlist true regardless of what a build has left behind, and it
-        // needs no `.exclude`: an exclusion list names paths that are not in
-        // the package, which is not the same statement as naming the paths
-        // that are.
         "consumer/build.zig",
         "consumer/build.zig.zon",
         "consumer/src/main.zig",
 
-        // Upstream's library, verbatim and complete: every core routine, the
-        // four public headers, and upstream's own two validation programs,
-        // which `upstream-test` builds and runs as this package's native
-        // oracle. The whole directory travels rather than a hand-picked file
-        // list so that the tree a dependent receives is upstream's tree.
         "src",
 
-        // Upstream's remaining build, packaging and documentation files,
-        // carried unchanged so the package is the pinned upstream tree plus
-        // this fork's Zig graph rather than a subset of it. None of them is
-        // executed here: `configure.ac`, `m4/`, `bootstrap.sh`, the two
-        // `Makefile.am` files and `meson.build` are read as the authority for
-        // what to compile and where, and `erfa.pc.in` is a packaging template.
         "Makefile.am",
         "src/Makefile.am",
         "configure.ac",
@@ -96,38 +29,16 @@
         "bootstrap.sh",
         "erfa.pc.in",
 
-        // `m4/erfa-numver.m4` records the upstream rule that splits
-        // `PACKAGE_VERSION` into the three numeric macros `config.h` carries,
-        // so it is part of the configuration this package reproduces and is
-        // shipped for the same reason the rest of upstream's build files are.
-        // Upstream's `.gitignore` lists `/m4/`; `.gitignore` re-includes it, so
-        // this path is present in a fetched copy and not merely listed.
         "m4",
-
-        // Upstream's own CI configuration, kept as upstream wrote it and not
-        // run by this fork; `.github/workflows/verify.yml` is this fork's own.
 
         "README.rst",
         "RELEASE.rst",
 
-        // Upstream's licence terms and its relicensing permission, verbatim
-        // and distinct. `LICENSE` is the BSD-3-Clause text with the SOFA
-        // derivation preamble; `INFO` is the IAU SOFA Board's relicensing
-        // permission and is a provenance record rather than a licence. A
-        // private downstream removes no upstream obligation.
         "LICENSE",
         "INFO",
 
-        // Upstream's ignore conventions, preserved in full.
         ".gitignore",
 
-        // This fork's records. Every one of these is read by `zig build
-        // install` rather than only by a reader: `installRecords` installs
-        // `NOTICE.md`, `FORK-LICENSE.md` and `UPSTREAM.md` under
-        // `share/licenses/erfa/` and `README.upstream.md` under
-        // `share/doc/erfa/`, straight out of the source tree. A `.paths` that
-        // omitted them would make a fetched or packaged copy unable to install
-        // its own licence material, which is not a cosmetic difference.
         "UPSTREAM.md",
         "UPSTREAM.sha256",
         "NOTICE.md",
@@ -138,45 +49,13 @@
         "README.upstream.md",
         "README.zig.md",
 
-        // The provider route's source: the build half, the descriptor, and the
-        // reusable loader core with its synchronization binding. The whole
-        // directory, because `runtime/graph.zig` reaches `runtime/loader.zig`,
-        // `runtime/library.zig`, `runtime/generate.zig` and `runtime/sync.c` by
-        // relative path and a `.paths` naming two of those four would give a
-        // fetched copy a dispatch that cannot resolve.
         "runtime",
 
-        // The Nix and devenv packaging this SDK ships. `package.nix` is the
-        // one derivation, `flake.nix` and `devenv.nix` are its two call sites,
-        // and `devenv.yaml` is the directory devenv reads for its own
-        // configuration. They are named one by one rather than as a glob
-        // because `.envrc` is deliberately excluded: direnv's entry point
-        // carries no build input and has no business in a package source.
         "package.nix",
         "flake.nix",
         "devenv.nix",
         "devenv.yaml",
 
-        // `flake.lock` ships beside them, and for the reason `flake.nix`
-        // does: it records the exact `nixpkgs` revision and narHash this SDK
-        // was locked against (`c7def046b9a883d46974757852106483d741586f`,
-        // `sha256-6RSEDHIWQtesQKWSu5qRai8L2h4KgCgMEfJHstW99G4=`), so a fetched
-        // copy resolves the same inputs instead of re-locking to whatever the
-        // registry serves on the day it is built. Whether the derivation
-        // later excludes the lock from the source Nix compiles is a separate
-        // axis and this manifest does not speak to it: by that point the flake
-        // frontend has already resolved the locked inputs.
-        //
-        // `devenv.lock` is deliberately not named. It does not exist in this
-        // tree, and listing an absent path is not the same statement as
-        // listing the one that is present.
         "flake.lock",
-        // `.zig-cache/`, `zig-out/` and `zig-pkg/` are absent by construction:
-        // no entry above names a directory that a build writes into except
-        // `consumer`, and that one is listed as its three files. `runtime` is
-        // named as a directory because nothing in it is build output -- the
-        // generator writes its dispatch into the build cache -- and `.git/` is
-        // never named. `.envrc` is excluded on purpose, as above. See
-        // .gitignore.
     },
 }

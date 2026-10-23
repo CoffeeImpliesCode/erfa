@@ -1,50 +1,23 @@
-//! Compile-time and run-time exercise of every public facade method.
-//!
-//! Referencing a function only proves it is declared. This module *calls*
-//! every public wrapper in `root.zig` with arguments that make the call
-//! succeed, and checks an independent result afterwards, so that:
-//!
-//!   * `zig build check` compiling this for every supported target forces every
-//!     facade body to be instantiated, and
-//!   * `zig build test` running it natively shows the calls really work.
-//!
-//! The checks are invariants and published reference values, not a restatement
-//! of what the code computes: a rotation matrix is orthonormal, a sidereal
-//! angle is inside `[0, 2pi)`, a replacing leap table changes what `eraDat`
-//! computes, a rejected date leaves an output absent, and a handful of values
-//! are compared with SOFA's own validation numbers. `tests.zig` holds the full
-//! per-function known-answer suite, including the contents of the leap-second
-//! table; this file exists to make sure no body is left uninstantiated, so it
-//! deliberately checks behaviour rather than table contents or declarations.
-//!
-//! It is also runnable on its own, so `pub fn main` is here rather than only a
-//! library entry point.
+//! Instantiates every public facade wrapper and checks independent invariants and known answers.
+//! `tests.zig` holds SOFA validation cases; this module also runs as a standalone linked or runtime-loaded executable.
 
 const std = @import("std");
 const erfa = @import("erfa");
 
-/// The only way `exercise` can fail: a public call produced a result that
-/// contradicts an expectation this file states independently.
+/// Failures this exercise can report: a contradictory result or missing output.
 pub const Failure = error{
-    /// A wrapper's result disagrees with the invariant or reference value
-    /// this file checks against.
+    /// A result disagreed with an invariant or reference value.
     UnexpectedResult,
-    /// A wrapper reported success but left an output absent, or the reverse.
+    /// A wrapper's output availability disagreed with its status.
     MissingOutput,
 };
 
-/// Assert a condition the caller states.
-///
-/// `Failure` names a class of failure rather than a check, so this helper
-/// alone would leave a gate log naming this file and not the line that broke.
-/// `main` prints the error's return trace for that case, whose first entry is
-/// the `try` that propagated it, and `expectNear` prints the values it
-/// compared. Neither writes anything unless a check fails.
+/// Assert a condition, returning `UnexpectedResult` on failure.
 fn expect(condition: bool) Failure!void {
     if (!condition) return error.UnexpectedResult;
 }
 
-/// Assert that two doubles agree to a stated absolute tolerance.
+/// Assert that two doubles agree within an absolute tolerance.
 fn expectNear(expected: f64, actual: f64, tolerance: f64) Failure!void {
     if (std.math.approxEqAbs(f64, expected, actual, tolerance)) return;
     std.debug.print(
@@ -54,8 +27,7 @@ fn expectNear(expected: f64, actual: f64, tolerance: f64) Failure!void {
     return error.UnexpectedResult;
 }
 
-/// Assert that a rotation matrix is orthonormal: R R^T is the identity to the
-/// accuracy these models claim.
+/// Assert that a rotation matrix is orthonormal.
 fn expectOrthonormal(matrix: erfa.Mat3) Failure!void {
     for (0..3) |row| {
         for (0..3) |column| {
@@ -67,8 +39,7 @@ fn expectOrthonormal(matrix: erfa.Mat3) Failure!void {
     }
 }
 
-/// Call every public facade method once and verify what does not depend on how
-/// upstream implements it.
+/// Call every public facade method and verify independent behavior.
 pub fn exercise() Failure!void {
     try exerciseLeapSeconds();
     try exerciseCalendar();
@@ -87,9 +58,7 @@ fn exerciseLeapSeconds() Failure!void {
     const entries = borrowed.entries orelse return error.MissingOutput;
     try expect(entries.len > 0);
 
-    // Replace, observe the effect, and put the built-in table back. This is
-    // the only way to prove the setter retains the caller's pointer rather
-    // than copying it into something this module owns.
+    // The replacement must remain live because the facade retains its pointer.
     var replacement: [64]erfa.LeapSecond = undefined;
     if (entries.len + 2 > replacement.len) return error.UnexpectedResult;
     @memcpy(replacement[0..entries.len], entries);
@@ -105,8 +74,7 @@ fn exerciseLeapSeconds() Failure!void {
     replacement[entries.len].delat = 40.0;
     try expectNear(40.0, erfa.timescale.dat(2021, 6, 1, 0.0).delta_at, 0.0);
 
-    // count <= 0 is upstream's reset to the built-in table
-    // (erfadatextra.c:56-58), and the restored table still drives eraDat.
+    // Reset restores the built-in table.
     erfa.leap.setLeapSeconds(null);
     const restored = erfa.leap.getLeapSeconds();
     try expect((restored.entries orelse return error.MissingOutput).len > 2);
@@ -120,7 +88,7 @@ fn exerciseCalendar() Failure!void {
     try expectNear(2400000.5, mjd.part_a, 0.0);
     try expectNear(52791.0, mjd.part_b, 0.0);
 
-    // The three rejection statuses, and the one that still produces a value.
+    // Check all three rejection statuses, including the invalid-day result.
     try expect(erfa.calendar.cal2jd(-4800, 1, 1).date == null);
     try expect(erfa.calendar.cal2jd(2003, 13, 1).date == null);
     const bad_day = erfa.calendar.cal2jd(2003, 2, 29);
@@ -167,8 +135,7 @@ fn exerciseCalendar() Failure!void {
     try expect(erfa.calendar.tf2d('+', 24, 0, 0.0).status.isWarning());
 
     try expectNear(1982.418424159278580, erfa.calendar.epb(.{ .part_a = 2415019.8135, .part_b = 30103.18648 }), 1e-12);
-    // epb2jd and epj2jd take and return a Julian epoch counted from 2000.0, so
-    // 1957.3 is late 1957 and lands on MJD 35948, not MJD 53948.
+    // Epoch conversions use Julian years from J2000, not MJD.
     const epb_date = erfa.calendar.epb2jd(1957.3);
     try expectNear(2400000.5, epb_date.part_a, 1e-9);
     try expectNear(35948.1915101513, epb_date.part_b, 1e-9);
@@ -184,10 +151,7 @@ fn exerciseTimescales() Failure!void {
     try expect(erfa.timescale.dat(1959, 12, 31, 0.0).status.isWarning());
     try expect(erfa.timescale.dat(2003, 6, 1, 1.5).status.isError());
 
-    // Every one of these conversions keeps upstream's own split, so
-    // part_a is carried through untouched and part_b is a fraction of a day.
-    // Comparing collapsed sums would measure the ulp of 2.45e6 -- 4.7e-10 --
-    // rather than the conversion, so the increments are compared part-wise.
+    // Compare date parts separately to preserve the two-part precision.
     const tai = erfa.Date2{ .part_a = 2453750.5, .part_b = 0.892482639 };
     const tai_utc = erfa.timescale.taiutc(tai);
     try expect(tai_utc.status.isOk());
@@ -215,8 +179,7 @@ fn exerciseTimescales() Failure!void {
     try expect(erfa.timescale.ut1tt(ut1, 64.8499).status.isOk());
     try expect(erfa.timescale.ttut1(ut1, 64.8499).status.isOk());
 
-    // TT - TAI is fixed at 32.184 s, so the step between the parts is exact
-    // and the round trip through tttai returns the input it was given.
+    // TT-TAI is exactly 32.184 s; the reverse conversion restores the split.
     const tt = erfa.timescale.taitt(tai).date orelse return error.MissingOutput;
     try expectNear(32.184 / 86400.0, tt.part_b - tai.part_b, 1e-12);
     const tai_again = erfa.timescale.tttai(tt).date orelse return error.MissingOutput;
@@ -330,8 +293,7 @@ fn exerciseGeodetic() Failure!void {
         try expect(geodetic.geodetic.height > 0.0);
     }
 
-    // The general form is reachable, and unlike the named-ellipsoid form it
-    // reports an illegal ellipsoid by leaving the output absent.
+    // The general form reports an illegal ellipsoid by leaving output absent.
     const general = erfa.geodetic.gc2gde(6378136.0, 0.0033528, &cartesian);
     try expectNear(0.9827937232473290680, (general.geodetic orelse return error.MissingOutput).longitude, 1e-14);
     try expect(erfa.geodetic.gc2gde(6378136.0, 1.5, &cartesian).geodetic == null);
@@ -342,10 +304,7 @@ fn exerciseGeodetic() Failure!void {
         try expect(erfa.geodetic.gd2gc(ellipsoid, position).status.isOk());
     }
     try expect(erfa.geodetic.gd2gce(6378136.0, 0.0033528, position).cartesian != null);
-    // gd2gce validates nothing about the flattening. Its -1 guard is
-    // cos(phi)^2 + w^2 sin(phi)^2 <= 0 (gd2gce.c:73-74), a sum of squares, so
-    // a flattening no Earth has is computed from rather than rejected -- which
-    // is exactly why the field is optional and not a sentinel.
+    // `gd2gce` accepts out-of-range flattening; only its divisor guard can fail.
     const outside_range = erfa.geodetic.gd2gce(6378136.0, 2.0, position);
     try expect(outside_range.status.isOk());
     try expect((outside_range.cartesian orelse return error.MissingOutput)[0] != 0.0);
@@ -355,9 +314,7 @@ fn exercisePrecession() Failure!void {
     const epoch = erfa.Date2{ .part_a = 2400000.5, .part_b = 53736.0 };
     const other = erfa.Date2{ .part_a = 2400000.5, .part_b = 50123.9999 };
 
-    // Mean obliquity is between 23.4 and 23.5 degrees in both models, and the
-    // two equation-of-date angles are far smaller: each is bounded on both
-    // sides rather than pinned to a digit.
+    // Obliquity stays within 23.4-23.5 degrees; equation-of-date angles are smaller.
     const angle_bounds = [_]struct { value: f64, low: f64, high: f64 }{
         .{ .value = erfa.precession.obl06(.{ .part_a = 2400000.5, .part_b = 54388.0 }), .low = 23.4, .high = 23.5 },
         .{ .value = erfa.precession.obl80(.{ .part_a = 2400000.5, .part_b = 54388.0 }), .low = 23.4, .high = 23.5 },
@@ -410,9 +367,8 @@ fn exercisePrecession() Failure!void {
 
     const supplied_dpsi = -0.9632552291149335877e-5;
     const supplied_deps = 0.4063197106621141414e-4;
+    // Supplied nutation angles are inputs, not outputs.
     const pn00_result = erfa.precession.pn00(epoch, supplied_dpsi, supplied_deps);
-    // The nutation angles are this model's input, not its output; what it
-    // produces is the set of rotations below.
     try expectOrthonormal(pn00_result.rb);
     try expectOrthonormal(pn00_result.rp);
     try expectOrthonormal(pn00_result.rbp);
@@ -454,7 +410,7 @@ fn exercisePrecession() Failure!void {
     const equatorial = erfa.precession.lteceq(2500.0, .{ .longitude = 1.5, .latitude = 0.6 });
     try expect(equatorial.right_ascension > 0.0 and equatorial.declination > 0.0);
 
-    // Both of these take no vector argument and return a whole unit vector.
+    // These functions return complete unit vectors.
     const to_ecliptic = erfa.precession.ltpecl(-1500.0);
     try expectNear(1.0, @sqrt(to_ecliptic[0] * to_ecliptic[0] +
         to_ecliptic[1] * to_ecliptic[1] +
@@ -517,28 +473,17 @@ fn exerciseVectors() Failure!void {
     for (deflected) |value| try expect(std.math.isFinite(value));
 }
 
-/// The part of the facade beyond the calendars, the time scales and the
-/// astrometry: the vector algebra, the matrices, the frames, the star
-/// catalogues and the fundamental arguments.
-///
-/// The checks here are invariants rather than reference values - an
-/// orthonormal matrix, a transpose that undoes a multiplication, a projection
-/// that inverts, a star whose space motion round-trips through its own
-/// catalogue quantities - because this file exists to make sure every body is
-/// instantiated. `tests.zig` holds the per-function known answers.
+/// Exercises the rest of the facade: vector algebra, matrices, coordinate frames,
+/// catalogue transforms, atmospheric models and fundamental arguments.
+/// Checks invariants so every wrapper body is instantiated without duplicating `tests.zig`.
 fn exerciseExtendedSurface() Failure!void {
     const date = erfa.Date2{ .part_a = 2400000.5, .part_b = 53736.0 };
 
-    // Angles. The same input normalises into two different ranges, and those
-    // are not negations of one another: -1 is 2*pi - 1 as an `anp` and -1 as
-    // an `anpm`, and pi itself is -pi as an `anpm`.
+    // The normalizers use different ranges; `anpm(pi)` returns `-pi`.
     try expectNear(2.0 * std.math.pi - 1.0, erfa.angles.anp(-1.0), 1e-15);
     try expectNear(-1.0, erfa.angles.anpm(-1.0), 1e-15);
     try expectNear(-std.math.pi, erfa.angles.anpm(std.math.pi), 1e-15);
-    // pi radians is exactly 180 degrees and exactly 12 hours. Both go through
-    // eraD2tf, whose first field carries whatever magnitude the angle has
-    // rather than wrapping it into a smaller unit, so the first field is 180
-    // for the degree decomposition and 12 for the hour one.
+    // A half-turn is 180 degrees or 12 hours; the leading fields are not wrapped.
     const degrees = erfa.angles.a2af(3, std.math.pi);
     try expect(degrees.sign == '+' and degrees.degrees == 180);
     try expect(degrees.arcminutes == 0 and degrees.arcseconds == 0 and degrees.fraction == 0);
@@ -546,10 +491,7 @@ fn exerciseExtendedSurface() Failure!void {
     try expect(hours.sign == '+' and hours.hours == 12);
     try expect(hours.minutes == 0 and hours.seconds == 0 and hours.fraction == 0);
 
-    // Matrices. Three rotations and the identity are all orthonormal, and a
-    // rotation vector rebuilds an orthonormal matrix at every angle; the round
-    // trip of the vector itself is only claimed below `pi`, where its sign is
-    // unambiguous.
+    // Rotations are orthonormal; rotation-vector sign is unambiguous below pi.
     const quarter = std.math.pi / 4.0;
     const rotations = [_]erfa.Mat3{
         erfa.matrices.rotateX(quarter),
@@ -593,9 +535,7 @@ fn exerciseExtendedSurface() Failure!void {
     try expect(erfa.matrices.positionToPv(&probe).velocity[0] == 0.0);
     for (probe, erfa.matrices.pvToPosition(probe_pv)) |want, got| try expectNear(want, got, 0.0);
 
-    // Spherical and Cartesian. The decomposition uses `atan2` and keeps the
-    // fourth-quadrant sign, so the property that is actually stated is the one
-    // that follows: the unit vector at two angles decomposes back to them.
+    // Cartesian conversion preserves the fourth-quadrant angle.
     const unit = erfa.spherical.toCartesian(0.3, -0.2);
     const angles_back = erfa.spherical.fromCartesian(&unit);
     try expectNear(0.3, angles_back.theta, 1e-15);
@@ -616,16 +556,14 @@ fn exerciseExtendedSurface() Failure!void {
     );
     for (probe_pv.position, rebuilt_pv.position) |want, got| try expectNear(want, got, 1e-12);
 
-    // Horizon. Azimuth comes back in `[0, 2*pi)` and the two forms are each
-    // other's inverse for a line of sight that is not exactly polar.
+    // Horizon conversions invert for non-polar directions.
     const horizontal = erfa.horizon.azimuthElevationToHorizontal(1.1, 0.4, 0.8);
     const altitude = erfa.horizon.horizontalToAzimuthElevation(horizontal.first, horizontal.second, 0.8);
     try expectNear(1.1, altitude.first, 1e-12);
     try expectNear(0.4, altitude.second, 1e-12);
     try expect(erfa.horizon.horizontalToParallax(horizontal.first, horizontal.second, 0.8) != 0.0);
 
-    // Ecliptic. The matrix form is the same rotation the coordinate pair
-    // applies, which is the agreement this checks.
+    // The ecliptic matrix matches its coordinate conversion.
     const ecliptic_matrix = erfa.ecliptic.matrix(date);
     try expectOrthonormal(ecliptic_matrix);
     const equatorial = erfa.ecliptic.fromEcliptic(date, .{ .longitude = 1.0, .latitude = 0.2 });
@@ -639,18 +577,14 @@ fn exerciseExtendedSurface() Failure!void {
     const rotated = erfa.matrices.apply(&ecliptic_matrix, &ecliptic_direction);
     try expectNear(1.0, erfa.spherical.fromCartesian(&rotated).theta, 1e-12);
 
-    // Galactic. The rotation is fixed, so the pair is each other's inverse.
+    // The fixed galactic rotation inverts.
     const galactic = erfa.galactic.toIcrs(1.0, 0.2);
     const icrs = erfa.galactic.fromIcrs(galactic.right_ascension, galactic.declination);
     try expectNear(1.0, icrs.longitude, 1e-12);
     try expectNear(0.2, icrs.latitude, 1e-12);
 
-    // Gnomonic. `toStandardCoordinates` and `fromStandardCoordinatesInverse`
-    // are each other's inverse - upstream's `iauTpsts` and `iauTpxes` - while
-    // `fromStandardCoordinates` is a different question: it reports the two
-    // unit directions whose projection is `(xi, eta)`, so there is no
-    // round trip to check there, only that both solutions exist and that a
-    // reference point on the plane's edge produces none at all.
+    // Forward projection returns two directions; inverse projection is a separate operation.
+    // Check both solutions away from the plane edge and none on it.
     const reference = erfa.StandardCoordinates{ .a = 0.0, .b = 0.0 };
     const projected = erfa.gnomonic.fromStandardCoordinates(0.01, 0.02, reference);
     try expect(projected.status.value > 0);
@@ -676,28 +610,16 @@ fn exerciseExtendedSurface() Failure!void {
     try expectNear(0.01, vector_inverse.coordinates.a, 1e-6);
     try expectNear(0.02, vector_inverse.coordinates.b, 1e-6);
 
-    // Refraction. `refa` is the refractive index minus one at the observer,
-    // so it is positive. `refb` carries a minus sign by upstream's own
-    // convention: `refco.c:203` computes `-gamma * (beta - gamma / 2)`, and
-    // `beta` is `4.4474e-6 * tk` (`refco.c:198`) with `tk` the absolute
-    // temperature, which at 10 C is 283.15. Here `beta` is about 1.26e-3 and
-    // `gamma` about 2.82e-4, so `beta` outruns `gamma / 2` by nearly a decade
-    // and the second constant is negative -3.15e-7. Upstream's own pinned
-    // value for the same routine is negative too (`t_erfa_c.c:8006`).
+    // Refraction A is positive and B negative under upstream's formula at these conditions.
     const refraction = erfa.atmosphere.refractionConstants(1010.0, 10.0, 0.5, 0.55);
     try expect(refraction.a > 0.0 and refraction.b < 0.0);
 
-    // TDB-TT for an observer. The whole model is a couple of milliseconds, so
-    // a finite answer inside a second is the claim it makes.
+    // Earth-observer TDB-TT is a finite millisecond-scale estimate.
     const tdb_minus_tt = erfa.timescale.dtdb(date, 0.5, 1.1, 4500.0, 1000.0);
     try expect(std.math.isFinite(tdb_minus_tt));
     try expect(@abs(tdb_minus_tt) < 1.0);
 
-    // The leap-second initialiser. Upstream tests this thread's count, not the
-    // argument, so a thread that has just been reset takes the caller's table
-    // and a thread that already has one ignores it. That is the ownership rule
-    // `setLeapSeconds` exists to bypass, and it is why this is not the same
-    // call twice.
+    // `datini` installs `builtin` only when no positive-count table is active.
     var replacement_table = [_]erfa.LeapSecond{.{ .iyear = 2000, .month = 1, .delat = 12.0 }};
     erfa.leap.setLeapSeconds(null);
     const installed = erfa.leap.datini(replacement_table[0..]);
@@ -706,14 +628,11 @@ fn exerciseExtendedSurface() Failure!void {
     const ignored = erfa.leap.datini(null);
     try expect(ignored.status.value == 1);
     try expect((ignored.entries orelse return error.MissingOutput)[0].delat == 12.0);
-    // Put the built-in table back, so nothing below reads TAI-UTC through a
-    // one-entry table.
+    // Restore the built-in table before checking TAI-UTC.
     erfa.leap.setLeapSeconds(null);
     try expectNear(37.0, erfa.timescale.dat(2020, 6, 1, 0.0).delta_at, 0.0);
 
-    // The vector algebra the rest of the library is written in, checked
-    // against the identity each one is supposed to have rather than against a
-    // number this file computed twice.
+    // Check vector identities rather than duplicating computed expected values.
     const other = erfa.Vec3{ -0.7, 0.4, 1.1 };
     try expectNear(
         probe[0] * other[0] + probe[1] * other[1] + probe[2] * other[2],
@@ -728,20 +647,12 @@ fn exerciseExtendedSurface() Failure!void {
     }
     for (erfa.vectors.ppsp(&probe, 2.0, &other)) |got| try expect(std.math.isFinite(got));
     const cross = erfa.vectors.pxp(&probe, &other);
-    // A cross product is perpendicular to both of its operands, which is the
-    // property that says the routine computed one and not a componentwise
-    // product with the same shape.
+    // The cross product is perpendicular to both operands.
     try expectNear(0.0, erfa.vectors.pdp(&cross, &probe), 1e-15);
     try expectNear(0.0, erfa.vectors.pdp(&cross, &other), 1e-15);
     for (probe, erfa.vectors.sxp(3.0, &probe)) |want, got| try expectNear(3.0 * want, got, 1e-15);
     try expect(erfa.vectors.sxpv(2.0, probe_pv).velocity[1] == 2.0 * probe_pv.velocity[1]);
-    // `s2xpv` scales the position and the velocity with two separate scalars
-    // and returns both members (`src/s2xpv.c:31-32`), so the result is read as
-    // two three-component members rather than as one vector. The scales are
-    // different and one is negative, so a single scalar applied twice, or the
-    // two members swapped, disagrees on all six values. `eraSxp` is one
-    // multiply per component (`src/sxp.c:27-29`), so each product is bit-exact
-    // and the comparison is `==`.
+    // Different exact scales and unrelated vectors distinguish all six outputs.
     const scaled_separately = erfa.vectors.s2xpv(3.0, -0.5, probe_pv);
     for (probe_pv.position, scaled_separately.position) |want, got| {
         try expect(3.0 * want == got);
@@ -777,12 +688,7 @@ fn exerciseExtendedSurface() Failure!void {
         1e-12,
     );
 
-    // Light deflection and aberration. Each of these is a direction, so the
-    // property checked is that it is finite and, where upstream normalises it,
-    // of unit length. `eraLdn` at this pin copies its `sc` argument into `sn`
-    // and then only ever writes `sn`, so the two results differ exactly in the
-    // way that copy and no other change explains: `in_place` is the direction
-    // that went in and `deflected` is the one that came out.
+    // `eraLdn` returns the input direction and its deflected result separately.
     const bodies = [_]erfa.LightDeflectingBody{
         .{ .bm = 0.00028574, .dl = 3e-10, .pv = .{ .{ 0.0, 0.0, 0.0 }, .{ 0.0, 0.0, 0.0 } } },
     };
@@ -808,8 +714,7 @@ fn exerciseExtendedSurface() Failure!void {
         try expect(std.math.isFinite(value));
     }
 
-    // Space motion. A star at ten parsecs is well clear of the parallax floor,
-    // and its own catalogue quantities are what come back.
+    // A star at ten parsecs is clear of the parallax floor and round-trips.
     const star = erfa.StarMotion{
         .right_ascension = 1.1,
         .declination = 0.4,
@@ -841,9 +746,7 @@ fn exerciseExtendedSurface() Failure!void {
             pmpx[2] * pmpx[2],
     ), 1e-12);
 
-    // Star catalogues. FK5 to Hipparcos and back is the pair that has to agree
-    // with itself, and the epoch transformations keep the proper motion, which
-    // is the part a binding most easily drops.
+    // Catalogue transforms must round-trip position and proper motion.
     const fk5 = erfa.StarMotion{
         .right_ascension = 1.1,
         .declination = 0.4,
@@ -878,10 +781,7 @@ fn exerciseExtendedSurface() Failure!void {
         date,
     ).right_ascension, 1e-12);
 
-    // The fourteen fundamental arguments. They are polynomials in Julian
-    // centuries of TDB, so every one of them is finite at J2000.0, and the
-    // accumulated precession is exactly zero there - the one value this file
-    // can state without a reference.
+    // Fundamental arguments are finite at J2000; accumulated precession is zero.
     const arguments = [_]f64{
         erfa.fundamentalArgs.d(0.0),
         erfa.fundamentalArgs.earthLongitude(0.0),
@@ -902,15 +802,11 @@ fn exerciseExtendedSurface() Failure!void {
     try expectNear(0.0, erfa.fundamentalArgs.accumulatedPrecession(0.0), 1e-15);
 }
 
-/// A shared object exporting the entry points of `erfa.h`, `erfam.h`,
-/// `erfaextra.h` and `erfadatextra.h`, named by the environment when the
-/// command line does not name one.
+/// Shared library exporting the four ERFA headers' entry points.
 const provider_variable = "ERFA_TEST_PROVIDER";
 
 pub fn main(init: std.process.Init) void {
-    // In a runtime-loading build nothing below is reachable until the table
-    // exists, so the provider is loaded first and reported. The branch is
-    // comptime, so a linked build never mentions the loader at all.
+    // Load the provider before calls; the linked-build branch is comptime-elided.
     if (comptime erfa.runtime_loaded) {
         erfa.load(.{ .path = providerRequest(init) }) catch |err| {
             std.debug.print("api_exercise: loading the provider failed: {t}\n", .{err});
@@ -920,21 +816,14 @@ pub fn main(init: std.process.Init) void {
     }
     exercise() catch |err| {
         std.debug.print("api_exercise failed: {s}\n", .{@errorName(err)});
-        // One entry per `try` the error passed through, so the first entry is
-        // the check that did not hold. Without it the log names this file and
-        // nothing else.
+        // The return trace identifies the failed check.
         if (@errorReturnTrace()) |trace| std.debug.dumpErrorReturnTrace(trace);
         std.process.exit(1);
     };
     std.debug.print("api_exercise: every public facade method was called\n", .{});
 }
 
-/// The provider this run should load, from `--provider <path>` or from
-/// `ERFA_TEST_PROVIDER`.
-///
-/// Both are explicit. Nothing here looks in a default location and falls back
-/// to a linked copy: a runtime-loading build that was not told which file to
-/// load says so and stops.
+/// Select the runtime provider from `--provider <path>` or `ERFA_TEST_PROVIDER`; no implicit fallback.
 fn providerRequest(init: std.process.Init) []const u8 {
     const args = init.minimal.args.toSlice(init.arena.allocator()) catch return noProvider();
     var index: usize = 1;
@@ -947,8 +836,7 @@ fn providerRequest(init: std.process.Init) []const u8 {
     return init.environ_map.get(provider_variable) orelse return noProvider();
 }
 
-/// Say which variable is missing. An error name alone would send the next
-/// person into the loader instead of to the command line.
+/// Report the missing provider configuration.
 fn noProvider() []const u8 {
     std.debug.print(
         "api_exercise: this is a runtime-loading build. Pass --provider <path>, " ++

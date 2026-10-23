@@ -1,57 +1,16 @@
-//! Behavioural tests for the ERFA facade.
-//!
-//! ## Where the expected numbers come from
-//!
-//! Every known answer below is a SOFA validation value inherited by upstream's
-//! own oracle program `src/t_erfa_c.c`, whose header says the expected values
-//! are SOFA's. SOFA is the IAU reference standard for these algorithms and
-//! `LICENSE` calls it a reference standard for the IAU and IERS. That makes
-//! these tests interoperability with a reference implementation, not a
-//! same-code round trip: the numbers were fixed long before this fork and are
-//! not read back out of the library under test.
-//!
-//! The exact inputs are those `t_erfa_c.c` uses, so a failure points at the
-//! same case upstream's own validator points at. The tolerances are upstream's,
-//! except where upstream used an exact comparison and this file keeps it
-//! exact.
-//!
-//! ## What else is here
-//!
-//! The status ladder is tested as behaviour, because that is the part a
-//! naive binding gets wrong: every negative status a routine can produce, every
-//! positive warning, and what each one leaves behind. The leap-second table is
-//! replaced and reset for real, on this thread, and the effect on `eraDat` is
-//! checked; that is the only way to show the setter retains rather than copies.
-//!
-//! One case states its expected numbers as the operands and the arithmetic
-//! rather than as a table: `vectors.s2xpv`, whose six values are two scalars
-//! applied to two members, which is exact because `eraSxp` is one multiply per
-//! component (`src/sxp.c:27-29`) and the operands are chosen so the product
-//! cannot round. Everything else here that carries numbers is either a SOFA
-//! validation value as described above or an invariant the routine must have.
-//!
-//! Nothing here pins a version string, checks that a declaration exists, or
-//! compares a forwarding accessor with the thing it forwards to.
+//! Tests for the ERFA Zig facade against SOFA reference values and behavior.
+//! Covers upstream status/output contracts, leap-table ownership and facade-specific edges.
+//! Known answers follow upstream's `src/t_erfa_c.c` unless stated otherwise.
 
 const std = @import("std");
 const erfa = @import("erfa");
 const testing = std.testing;
 
-/// A shared object exporting the entry points of the four shipped headers,
-/// named by the environment in a runtime-loading build.
+/// Shared library exporting ERFA's four headers' entry points.
 const provider_variable = "ERFA_TEST_PROVIDER";
 
-/// Make the native library usable, once, before a test calls the facade.
-///
-/// Safe to call from every test: the loader's contract makes the same request
-/// idempotent and keeps the handle to the end of the process. In a linked
-/// build the branch is comptime false and nothing here is reached, so these
-/// tests need no provider and no argument.
-///
-/// It is called at the top of every test below rather than once at the top of
-/// the file, because `--test-filter` runs one of these on its own and a test
-/// that silently fell back to whatever was linked would be worse than one that
-/// stopped.
+/// Ensure a runtime provider is loaded before each test; linked builds need none.
+/// Repeats are idempotent, and filtered tests do not fall back to linked code.
 fn nativeReady() void {
     if (comptime !erfa.runtime_loaded) return;
     if (erfa.loadedSource() != null) return;
@@ -84,7 +43,7 @@ fn missingProvider() noreturn {
     );
 }
 
-/// Compare against a SOFA validation value at upstream's own tolerance.
+/// Compare with a SOFA validation value at upstream's tolerance.
 fn expectNear(expected: f64, actual: f64, tolerance: f64) !void {
     try testing.expectApproxEqAbs(expected, actual, tolerance);
 }
@@ -103,8 +62,7 @@ test "calendar.cal2jd: SOFA value and the MJD split" {
 test "calendar.cal2jd: bad year and bad month compute nothing" {
     nativeReady();
 
-    // -4800 March 1 is where the algorithm becomes valid, so a whole year
-    // earlier is the first year it rejects (cal2jd.c:56-57).
+    // The algorithm accepts dates from -4800 March 1 onward.
     const year = erfa.calendar.cal2jd(-4800, 1, 1);
     try testing.expectEqual(@as(i32, -1), year.status.value);
     try testing.expect(year.date == null);
@@ -117,16 +75,14 @@ test "calendar.cal2jd: bad year and bad month compute nothing" {
 test "calendar.cal2jd: a bad day is an error that still computes the date" {
     nativeReady();
 
-    // 2003 February has 28 days, so February 29 is invalid,
-    // but upstream computes the Julian Date anyway (cal2jd.c:75-84). A binding
-    // that discarded the output here would lose a usable value.
+    // An invalid day reports `-3` but still returns its computed Julian Date.
     const result = erfa.calendar.cal2jd(2003, 2, 29);
     try testing.expectEqual(@as(i32, -3), result.status.value);
     const date = result.date orelse return error.MissingOutput;
     try expectNear(2400000.5, date.part_a, 0.0);
     try expectNear(52699.0, date.part_b, 0.0); // 2003-03-01
 
-    // And a leap year accepts the same day.
+    // Leap years accept February 29.
     const leap = erfa.calendar.cal2jd(2004, 2, 29);
     try testing.expect(leap.status.isOk());
     try expectNear(53064.0, (leap.date orelse return error.MissingOutput).part_b, 0.0);
@@ -135,7 +91,7 @@ test "calendar.cal2jd: a bad day is an error that still computes the date" {
 test "calendar.jd2cal: SOFA value, and the split does not matter" {
     nativeReady();
 
-    // Upstream's case, in the MJD split (jd2cal.c:35-42).
+    // Upstream's MJD-split case.
     const mjd = erfa.calendar.jd2cal(.{ .part_a = 2400000.5, .part_b = 50123.9999 });
     try testing.expect(mjd.status.isOk());
     const first = mjd.date orelse return error.MissingOutput;
@@ -144,8 +100,7 @@ test "calendar.jd2cal: SOFA value, and the split does not matter" {
     try testing.expectEqual(@as(i32, 10), first.day);
     try expectNear(0.9999, first.fraction, 1e-7);
 
-    // Use exactly representable fractions for the split invariant. Decimal
-    // 0.9999 rounds differently at MJD, JD and J2000 magnitudes.
+    // Exactly representable fractions isolate the split invariant.
     const splits = [_]erfa.Date2{
         .{ .part_a = 2400000.5, .part_b = 50123.75 },
         .{ .part_a = 2450124.25, .part_b = 0.0 },
@@ -163,7 +118,7 @@ test "calendar.jd2cal: SOFA value, and the split does not matter" {
 test "calendar.jd2cal: the accepted range is closed at both ends" {
     nativeReady();
 
-    // Outside DJMIN -68569.5 and DJMAX 1e9 nothing is written (jd2cal.c:68-78).
+    // Dates outside `[-68569.5, 1e9]` leave the output absent.
     const too_early = erfa.calendar.jd2cal(.{ .part_a = -68570.0, .part_b = 0.0 });
     try testing.expectEqual(@as(i32, -1), too_early.status.value);
     try testing.expect(too_early.date == null);
@@ -171,7 +126,7 @@ test "calendar.jd2cal: the accepted range is closed at both ends" {
     const too_late = erfa.calendar.jd2cal(.{ .part_a = 1e9 + 1.0, .part_b = 0.0 });
     try testing.expectEqual(@as(i32, -1), too_late.status.value);
 
-    // -4900 March 1, the earliest valid date, is accepted.
+    // The earliest valid date is accepted.
     const earliest = erfa.calendar.jd2cal(.{ .part_a = -68569.5, .part_b = 0.0 });
     try testing.expect(earliest.status.isOk());
     const date = earliest.date orelse return error.MissingOutput;
@@ -191,9 +146,7 @@ test "calendar.jdcalf: SOFA value, and a bad ndp is a warning not an error" {
     try testing.expectEqual(@as(i32, 10), rounded.day);
     try testing.expectEqual(@as(i32, 9999), rounded.fraction);
 
-    // ndp outside 0-9 is read as 0 and reported as +1 with the answer still
-    // computed (jdcalf.c:71-77). A binding that mapped +1 to an error would
-    // throw away a result.
+    // Out-of-range `ndp` becomes zero with warning `+1`, but retains the result.
     const warned = erfa.calendar.jdcalf(11, .{ .part_a = 2400000.5, .part_b = 50123.9999 });
     try testing.expect(warned.status.isWarning());
     try testing.expectEqual(@as(i32, 1), warned.status.value);
@@ -205,16 +158,13 @@ test "calendar.jdcalf: SOFA value, and a bad ndp is a warning not an error" {
 test "calendar.dtf2d: SOFA leap-second value and the unnormalised fraction" {
     nativeReady();
 
-    // 1994 June 30 ends in a leap second, so the second part of the result is
-    // the time divided by 86401 seconds, not by 86400 (dtf2d.c:118-120).
+    // On a leap-second day, the second part uses 86401 seconds.
     const result = erfa.calendar.dtf2d(.utc, 1994, 6, 30, 23, 59, 60.13599);
     try testing.expect(result.status.isOk());
     const date = result.date orelse return error.MissingOutput;
     try expectNear(2449534.49999, date.sum(), 1e-6);
 
-    // A time past the end of the day is the +2 warning, and it leaves the
-    // second part above 1.0 on purpose (dtf2d.c:126-131). Normalising it into
-    // [0,1) here would silently change the instant.
+    // Time past day end returns `+2` and can leave `part_b` above 1.
     const past = erfa.calendar.dtf2d(.utc, 1994, 6, 29, 23, 59, 60.5);
     try testing.expectEqual(@as(i32, 2), past.status.value);
     const past_date = past.date orelse return error.MissingOutput;
@@ -224,15 +174,14 @@ test "calendar.dtf2d: SOFA leap-second value and the unnormalised fraction" {
 test "calendar.dtf2d: the second-limit is 60 on an ordinary day and 61 on a leap day" {
     nativeReady();
 
-    // 2016 December 31 is a leap-second day, so 23:59:60 is accepted and
-    // 23:59:61 is the +2 warning (dtf2d.c:119-120).
+    // On a leap-second day, second 60 is valid and 61 warns with `+2`.
     const accepted = erfa.calendar.dtf2d(.utc, 2016, 12, 31, 23, 59, 60.0);
     try testing.expect(accepted.status.isOk());
 
     const warned = erfa.calendar.dtf2d(.utc, 2016, 12, 31, 23, 59, 61.0);
     try testing.expectEqual(@as(i32, 2), warned.status.value);
 
-    // 2016 December 30 is not, so 23:59:60 is already past the limit there.
+    // On an ordinary day, second 60 is past the limit.
     const ordinary = erfa.calendar.dtf2d(.utc, 2016, 12, 30, 23, 59, 60.0);
     try testing.expectEqual(@as(i32, 2), ordinary.status.value);
 }
@@ -306,8 +255,7 @@ test "calendar.tf2d, tf2a and af2a: SOFA values and the warning ladder" {
     try testing.expect(af2a.status.isOk());
     try expectNear(-0.7893115794313644842, af2a.radians, 1e-12);
 
-    // Each field out of range is its own warning, and the result is computed
-    // anyway from the absolute value (tf2d.c:30-37).
+    // Invalid time fields warn, but the absolute-value result is still computed.
     const bad_hour = erfa.calendar.tf2d('+', 24, 0, 0.0);
     try testing.expectEqual(@as(i32, 1), bad_hour.status.value);
     try expectNear(1.0, bad_hour.days, 1e-15);
@@ -318,7 +266,7 @@ test "calendar.tf2d, tf2a and af2a: SOFA values and the warning ladder" {
     const bad_second = erfa.calendar.af2a('+', 0, 0, 60.0);
     try testing.expectEqual(@as(i32, 3), bad_second.status.value);
 
-    // Only the first failure is reported (tf2d.c:35-36).
+    // Only the first invalid field is reported.
     const two_bad = erfa.calendar.tf2d('+', 99, 99, 99.0);
     try testing.expectEqual(@as(i32, 1), two_bad.status.value);
 }
@@ -358,8 +306,7 @@ test "timescale.dat: SOFA values across three leap seconds" {
 test "timescale.dat: the boundary either side of the 2016-12-31 leap second" {
     nativeReady();
 
-    // The step is effective on 1 January 2017; the day before still reports
-    // the old offset (dat.c note 2).
+    // The leap-second step takes effect on 1 January 2017.
     const before = erfa.timescale.dat(2016, 12, 31, 0.0);
     try testing.expect(before.status.isOk());
     try expectNear(36.0, before.delta_at, 0.0);
@@ -368,7 +315,7 @@ test "timescale.dat: the boundary either side of the 2016-12-31 leap second" {
     try testing.expect(after.status.isOk());
     try expectNear(37.0, after.delta_at, 0.0);
 
-    // And the 2015-07-01 step the same way.
+    // The 2015-07-01 step follows the same boundary rule.
     try expectNear(35.0, erfa.timescale.dat(2015, 6, 30, 0.0).delta_at, 0.0);
     try expectNear(36.0, erfa.timescale.dat(2015, 7, 1, 0.0).delta_at, 0.0);
 }
@@ -376,9 +323,7 @@ test "timescale.dat: the boundary either side of the 2016-12-31 leap second" {
 test "timescale.dat: a pre-UTC year warns and returns nothing" {
     nativeReady();
 
-    // Before UTC began in 1960 upstream returns the warning 1 with a zero
-    // delta, which is the only way to tell this warning from the far-future
-    // one below (dat.c:65-67, :222, :106).
+    // Before UTC began, warning `+1` carries a zero delta.
     const result = erfa.timescale.dat(1959, 12, 31, 0.0);
     try testing.expect(result.status.isWarning());
     try testing.expectEqual(@as(i32, 1), result.status.value);
@@ -388,14 +333,13 @@ test "timescale.dat: a pre-UTC year warns and returns nothing" {
 test "timescale.dat: a far-future year warns and still computes" {
     nativeReady();
 
-    // IYV is 2023 in this pin, so a year past 2028 is dubious; the result is
-    // the last table entry and is computed normally (dat.c:71-74, :225).
+    // This pin's IYV is 2023; dates after 2028 warn but retain the computed offset.
     const result = erfa.timescale.dat(2029, 6, 1, 0.0);
     try testing.expect(result.status.isWarning());
     try testing.expectEqual(@as(i32, 1), result.status.value);
     try expectNear(37.0, result.delta_at, 0.0);
 
-    // One year earlier is still inside the trusted window.
+    // The preceding year is inside the trusted window.
     try testing.expect(erfa.timescale.dat(2028, 6, 1, 0.0).status.isOk());
 }
 
@@ -406,7 +350,7 @@ test "timescale.dat: a bad fraction of the day is an error with a zero result" {
     try testing.expectEqual(@as(i32, -4), result.status.value);
     try expectNear(0.0, result.delta_at, 0.0);
 
-    // The first detected error wins when there is more than one (dat.c:99-104).
+    // When several inputs are invalid, the first error wins.
     const month_bad = erfa.timescale.dat(2003, 13, 32, 0.0);
     try testing.expectEqual(@as(i32, -2), month_bad.status.value);
 }
@@ -435,10 +379,7 @@ test "timescale conversions: SOFA values" {
     try expectNear(2453750.5, utc_from_ut1.part_a, 1e-6);
     try expectNear(0.8921006941018518519, utc_from_ut1.part_b, 1e-12);
 
-    // Upstream's own case, with the UTC part it states (t_erfa_c.c:9759): the
-    // literal below is not the part ut1utc returned above, and the difference
-    // is larger than the tolerance, so this compares against its own published
-    // input rather than against a round trip.
+    // Compare the upstream-published UTC input, not the result of the preceding conversion.
     const utcut1 = erfa.timescale.utcut1(.{ .part_a = 2453750.5, .part_b = 0.892100694 }, 0.3341);
     try testing.expect(utcut1.status.isOk());
     const ut1_direct = utcut1.date orelse return error.MissingOutput;
@@ -498,12 +439,12 @@ test "leap seconds: the built-in table is what upstream publishes" {
     const entries = table.entries orelse return error.MissingOutput;
     try testing.expectEqual(@as(usize, 42), entries.len);
 
-    // First entry: 1960 January 1, the start of UTC, TAI-UTC = 1.4178180 s.
+    // The table starts on 1960-01-01 with TAI-UTC = 1.4178180 s.
     try testing.expectEqual(@as(c_int, 1960), entries[0].iyear);
     try testing.expectEqual(@as(c_int, 1), entries[0].month);
     try expectNear(1.4178180, entries[0].delat, 0.0);
 
-    // Last entry: the 2016 December 31 leap second.
+    // The table ends with the 2016-12-31 leap second.
     const last = entries[entries.len - 1];
     try testing.expectEqual(@as(c_int, 2017), last.iyear);
     try testing.expectEqual(@as(c_int, 1), last.month);
@@ -513,8 +454,7 @@ test "leap seconds: the built-in table is what upstream publishes" {
 test "leap seconds: the setter retains a caller table for this thread" {
     nativeReady();
 
-    // eraDat attaches drift corrections to the first 14 table positions.
-    // Preserve the complete built-in prefix and append future leap records.
+    // `eraDat` applies drift to the first 14 rows; preserve that prefix.
     const builtin = erfa.leap.getLeapSeconds().entries orelse return error.MissingOutput;
     var replacement: [64]erfa.LeapSecond = undefined;
     if (builtin.len + 2 > replacement.len) return error.ReplacementTooSmall;
@@ -530,20 +470,18 @@ test "leap seconds: the setter retains a caller table for this thread" {
     try expectNear(38.0, erfa.timescale.dat(2021, 6, 1, 0.0).delta_at, 0.0);
     try expectNear(39.0, erfa.timescale.dat(2023, 6, 1, 0.0).delta_at, 0.0);
 
-    // A synchronous mutation between calls proves the pointer was retained.
+    // Mutating between calls verifies that the table pointer is retained.
     replacement[builtin.len].delat = 40.0;
     try expectNear(40.0, erfa.timescale.dat(2021, 6, 1, 0.0).delta_at, 0.0);
 
-    // count <= 0 is upstream's reset to the built-in table
-    // (erfadatextra.c:56-58), and passing null here does exactly that.
+    // `null` resets the table to upstream's built-in data.
     erfa.leap.setLeapSeconds(null);
     const restored = erfa.leap.getLeapSeconds();
     try testing.expectEqual(@as(usize, 42), (restored.entries orelse return error.MissingOutput).len);
     try expectNear(37.0, erfa.timescale.dat(2023, 6, 1, 0.0).delta_at, 0.0);
 }
 
-/// The site and conditions upstream's astrometry cases use, which is the
-/// only way to compare against its published answers.
+/// Site conditions used by upstream's astrometry validation cases.
 const sofa_site = erfa.Observatory{
     .delta_ut1 = 0.1550675,
     .longitude = -0.527800806,
@@ -557,7 +495,7 @@ const sofa_site = erfa.Observatory{
     .wavelength = 0.55,
 };
 
-/// The UTC quasi-JD those cases use, in the Julian Day Number split.
+/// UTC quasi-JD used in those cases, in the Julian Day Number split.
 const sofa_utc = erfa.Date2{ .part_a = 2456384.5, .part_b = 0.969254051 };
 
 test "rotation: SOFA values for the rotation angle and the sidereal times" {
@@ -649,12 +587,8 @@ test "rotation.apio13: SOFA values and the members it shares with apco13" {
     try expectNear(0.2014187785940396921e-3, astrom.refa, 1e-15);
     try expectNear(-0.2361408314943696227e-6, astrom.refb, 1e-18);
 
-    // eraApio and eraApco build the same CIRS-to-apparent rotation from the
-    // same arguments (apio.c:130-135 against apco.c:172-177), so every member
-    // except diurab is the same number. apco disables the diurnal aberration
-    // step (apco.c:204-205) and apio computes it (apio.c:161-162), which is
-    // why the two records are not interchangeable and why apio13 returns only
-    // these nine members.
+    // `apio13` and `apco13` share the CIRS rotation but differ in diurnal aberration.
+    // `apio13` returns only the nine fields it initializes.
     const full = erfa.rotation.apco13(sofa_utc, sofa_site);
     const complete = full.astrom orelse return error.MissingOutput;
     try expectNear(complete.along, astrom.along, 0.0);
@@ -705,9 +639,7 @@ test "rotation.atio13: SOFA values" {
 test "rotation.atoc13 and atoi13: SOFA values for all three coordinate kinds" {
     nativeReady();
 
-    // Each kind carries its own published answer for the same observed input.
-    // The two directions differ because atoc13 returns ICRS astrometric
-    // coordinates and atoi13 returns CIRS ones.
+    // `atoc13` returns ICRS coordinates; `atoi13` returns CIRS coordinates.
     const cases = [_]struct {
         kind: erfa.ObservationType,
         first: f64,
@@ -830,15 +762,14 @@ test "geodetic.gc2gd and gc2gde: SOFA values, and gc2gde reports an illegal elli
     try expectNear(0.9716018181101511937, wgs72.geodetic.latitude, 1e-14);
     try expectNear(333.2770726130318123, wgs72.geodetic.height, 1e-8);
 
-    // The general form reproduces the same longitude for the same radius and a
-    // slightly different flattening (gc2gde.c).
+    // The general form yields the same longitude with a slightly different flattening.
     const general = erfa.geodetic.gc2gde(6378136.0, 0.0033528, &cartesian);
     const geodetic = general.geodetic orelse return error.MissingOutput;
     try expectNear(0.9827937232473290680, geodetic.longitude, 1e-14);
     try expectNear(0.9716018377570411532, geodetic.latitude, 1e-14);
     try expectNear(332.36862495764397, geodetic.height, 1e-8);
 
-    // An illegal flattening is -1 and writes nothing at all (gc2gde.c:76-77).
+    // Invalid flattening returns `-1` without an output.
     const bad_flat = erfa.geodetic.gc2gde(6378136.0, 1.5, &cartesian);
     try testing.expectEqual(@as(i32, -1), bad_flat.status.value);
     try testing.expect(bad_flat.geodetic == null);
@@ -889,14 +820,10 @@ test "geodetic: the inverse transformation round-trips within its own accuracy" 
 test "geodetic: no coordinate or ellipsoid validation is invented" {
     nativeReady();
 
-    // Upstream performs no validation on elong, phi and height
-    // (gd2gc.c:45-50); absurd values are processed, not rejected.
+    // `gd2gc` does not validate longitude, latitude or height.
     const absurd = erfa.geodetic.gd2gc(.wgs84, .{ .longitude = 0.0, .latitude = 100.0, .height = -1e9 });
     try testing.expect(absurd.status.isOk());
-    // gd2gce validates no flattening either. Its -1 guard is
-    // cos(phi)^2 + w^2 sin(phi)^2 <= 0 (gd2gce.c:73-74), a sum of
-    // non-negative terms, so a flattening of 2.0 -- which upstream squares
-    // and then uses like any other -- is computed from, not rejected.
+    // `gd2gce` also accepts flattening 2.0; only its divisor guard can fail.
     const accepted = erfa.geodetic.gd2gce(6378136.0, 2.0, .{ .longitude = 0.0, .latitude = 0.0, .height = 0.0 });
     try testing.expect(accepted.status.isOk());
     const cartesian = accepted.cartesian orelse return error.MissingOutput;
@@ -913,8 +840,7 @@ test "precession: SOFA values for the obliquities, the two equinox angles and nu
 
     try expectNear(0.4090749229387258204, erfa.precession.obl06(epoch), 1e-14);
     try expectNear(0.4090751347643816218, erfa.precession.obl80(epoch), 1e-14);
-    // Upstream's own case for this routine uses MJD 41234.0, not the 54388.0
-    // the obliquities above use (t_erfa_c.c:3607).
+    // Upstream's `eqeq94` validation case uses MJD 41234.0.
     try expectNear(0.5357758254609256894e-4, erfa.precession.eqeq94(.{ .part_a = 2400000.5, .part_b = 41234.0 }), 1e-17);
     try expectNear(-0.1332882371941833644e-2, erfa.precession.eo06a(nutation_epoch), 1e-15);
 
@@ -1000,8 +926,7 @@ test "precession: SOFA values for pn00, pn06 and the a/b models" {
     const dpsi = -0.9632552291149335877e-5;
     const deps = 0.4063197106621141414e-4;
 
-    // pn00 and pn06 take the nutation angles as arguments; what each model
-    // produces is the set of rotations checked below.
+    // `pn00` and `pn06` take nutation angles as input and return rotations.
     const pn00 = erfa.precession.pn00(epoch, dpsi, deps);
     try expectNear(0.4090791789404229916, pn00.epsa, 1e-12);
     try expectNear(0.9999999999999942498, pn00.rb[0][0], 1e-12);
@@ -1122,8 +1047,7 @@ test "precession: SOFA values for the Lieske long-term models" {
 test "precession: every rotation matrix is orthonormal to its own accuracy" {
     nativeReady();
 
-    // A scientific invariant that holds for each of these models and does not
-    // depend on which published digit is used: R R^T is the identity.
+    // The rotation matrices satisfy `R R^T = I`.
     const epoch = erfa.Date2{ .part_a = 2400000.5, .part_b = 50123.9999 };
     const matrices = [_]erfa.Mat3{
         erfa.precession.num00a(epoch),
@@ -1169,7 +1093,7 @@ test "ephemeris.epv00: SOFA values and the out-of-range warning" {
     try expectNear(-0.1091874268116823295e-1, result.barycentric.velocity[0], 1e-15);
     try expectNear(-0.5404773180966231279e-2, result.barycentric.velocity[2], 1e-15);
 
-    // Outside 1900-2100 the status is +1 and both vectors are still produced.
+    // Outside 1900-2100 the warning `+1` retains both vectors.
     const far = erfa.ephemeris.epv00(.{ .part_a = 6200000.0, .part_b = 0.0 });
     try testing.expect(far.status.isWarning());
     try testing.expectEqual(@as(i32, 1), far.status.value);
@@ -1181,7 +1105,7 @@ test "ephemeris.epv00: SOFA values and the out-of-range warning" {
 test "ephemeris.plan94: SOFA values and the whole status ladder" {
     nativeReady();
 
-    // A planet number outside 1-8 is -1 and zeroes all six components.
+    // Invalid planet ids return `-1` and zero all six components.
     for ([_]i32{ 0, 10 }) |planet| {
         const rejected = erfa.ephemeris.plan94(.{ .part_a = 2400000.5, .part_b = 1e6 }, planet);
         try testing.expectEqual(@as(i32, -1), rejected.status.value);
@@ -1189,7 +1113,7 @@ test "ephemeris.plan94: SOFA values and the whole status ladder" {
         for (rejected.pv.velocity) |component| try expectNear(0.0, component, 0.0);
     }
 
-    // A year far outside 1000-3000 is the +1 warning with a real vector.
+    // Outside years 1000-3000, warning `+1` still returns a vector.
     const warned = erfa.ephemeris.plan94(.{ .part_a = 2400000.5, .part_b = -320000.0 }, 3);
     try testing.expectEqual(@as(i32, 1), warned.status.value);
     try expectNear(0.9308038666832975759, warned.pv.position[0], 1e-11);
@@ -1198,7 +1122,7 @@ test "ephemeris.plan94: SOFA values and the whole status ladder" {
     try expectNear(-0.6429458958255170006e-2, warned.pv.velocity[0], 1e-11);
     try expectNear(0.6406996426270981189e-2, warned.pv.velocity[2], 1e-11);
 
-    // Inside the valid range the status is 0.
+    // Valid-range dates return status zero.
     const earth = erfa.ephemeris.plan94(.{ .part_a = 2400000.5, .part_b = 43999.9 }, 1);
     try testing.expect(earth.status.isOk());
     try expectNear(0.2945293959257430832, earth.pv.position[0], 1e-11);
@@ -1230,8 +1154,7 @@ test "vectors: SOFA values for pn, pm and ld" {
     try expectNear(0.4302208436292448232, parts.unit[1], 1e-12);
     try expectNear(-0.8962934242275933816, parts.unit[2], 1e-12);
 
-    // pn and pm must agree: that is the invariant, and it does not depend on
-    // the published digits.
+    // `pn` and `pm` must report the same modulus.
     try expectNear(parts.modulus, erfa.vectors.pm(&p), 1e-15);
 
     const deflected = erfa.vectors.ld(
@@ -1259,21 +1182,8 @@ test "vectors: the zero vector has no direction and that is not an error" {
 test "vectors.s2xpv: two scalars, two members, six results" {
     nativeReady();
 
-    // `eraS2xpv` is two `eraSxp` calls and nothing else (`src/s2xpv.c:31-32`):
-    // `s1` multiplies the position and `s2` multiplies the velocity, each
-    // componentwise, and both members are returned. It is not `s1*p + s2*v`,
-    // which would be a three-component result, and the header declares the
-    // output as `double spv[2][3]` (`src/erfa.h:517`).
-    //
-    // The two scales are different and `s2` is negative, and the two members
-    // are unrelated triples, so a binding that applied one scalar to both
-    // members, that swapped them, or that returned one member and dropped the
-    // other disagrees on at least one of the six values below.
-    //
-    // The comparison is exact and owes no tolerance: `eraSxp` is a single
-    // multiply per component (`src/sxp.c:27-29`), and the operands are chosen
-    // so the product does not round - `3.0` times a power of two, and `-0.5`
-    // times anything.
+    // `s2xpv` scales position and velocity separately and returns both members.
+    // Different exact scales and unrelated vectors distinguish all six components.
     const pv = erfa.Pv{
         .position = .{ 0.25, -0.5, 2.0 },
         .velocity = .{ -0.7, 0.4, 1.1 },
@@ -1291,12 +1201,7 @@ test "vectors.s2xpv: two scalars, two members, six results" {
 test "angles: pi radians is exactly 180 degrees and exactly 12 hours" {
     nativeReady();
 
-    // The one known answer here is a definition rather than a table: a half
-    // turn is half a revolution is half a day. It is exact in both
-    // decompositions, and it also pins the shape each one reports: `a2af`
-    // carries the whole 180 in its first field and `a2tf` carries 12, because
-    // both go through `eraD2tf` and its first field is not wrapped into a
-    // smaller unit.
+    // A half-turn is exactly 180 degrees or 12 hours; leading fields are not wrapped.
     const degrees = erfa.angles.a2af(3, std.math.pi);
     try testing.expectEqual(@as(u8, '+'), degrees.sign);
     try testing.expectEqual(@as(i32, 180), degrees.degrees);
@@ -1311,8 +1216,7 @@ test "angles: pi radians is exactly 180 degrees and exactly 12 hours" {
     try testing.expectEqual(@as(i32, 0), hours.seconds);
     try testing.expectEqual(@as(i32, 0), hours.fraction);
 
-    // The two normalisations are not negations of one another, and `anpm`
-    // resolves a half turn downwards.
+    // `anp` and `anpm` use different ranges; `anpm(pi)` is `-pi`.
     try expectNear(2.0 * std.math.pi - 1.0, erfa.angles.anp(-1.0), 1e-15);
     try expectNear(-1.0, erfa.angles.anpm(-1.0), 1e-15);
     try expectNear(-std.math.pi, erfa.angles.anpm(std.math.pi), 1e-15);
@@ -1341,8 +1245,7 @@ test "matrices: a rotation is undone by its transpose" {
         }
     }
 
-    // The identity is the neutral element on both sides, which is a different
-    // statement from the transpose identity above.
+    // Identity is the neutral matrix on both sides.
     const identity = erfa.matrices.identity();
     const on_the_left = erfa.matrices.multiply(&identity, &rotations[0]);
     const on_the_right = erfa.matrices.multiply(&rotations[0], &identity);
@@ -1361,9 +1264,7 @@ test "matrices: a rotation is undone by its transpose" {
 test "spherical: a unit direction decomposes back to its two angles" {
     nativeReady();
 
-    // `eraC2s` uses `atan2` and normalises nothing, so the fourth-quadrant
-    // sign survives the decomposition; what has to hold is that the pair
-    // rebuilds the same vector.
+    // Cartesian conversion preserves the unnormalized fourth-quadrant angle.
     for ([_][2]f64{ .{ 0.3, -0.2 }, .{ -2.7, 1.2 }, .{ 5.9, 0.0 } }) |pair| {
         const vector = erfa.spherical.toCartesian(pair[0], pair[1]);
         const angles = erfa.spherical.fromCartesian(&vector);
@@ -1379,8 +1280,7 @@ test "spherical: a unit direction decomposes back to its two angles" {
         try expectNear(5.0, point.radius, 1e-14);
     }
 
-    // The zero vector has no direction, and upstream reports that as two zero
-    // angles rather than as an error.
+    // A zero vector yields two zero angles rather than an error.
     const zero = erfa.Vec3{ 0.0, 0.0, 0.0 };
     const degenerate = erfa.spherical.fromCartesian(&zero);
     try testing.expectEqual(0.0, degenerate.theta);
@@ -1405,12 +1305,7 @@ test "horizon: azimuth and elevation invert" {
 test "gnomonic: the tangent plane projection inverts" {
     nativeReady();
 
-    // `toStandardCoordinates` and `fromStandardCoordinatesInverse` are
-    // upstream's `iauTpsts` and `iauTpxes`, which are written as inverses of
-    // one another. `fromStandardCoordinates` answers a different question -
-    // the two directions whose projection is the given pair - so it is checked
-    // for the property it states: two solutions away from the plane's edge, and
-    // none at all on it.
+    // `tpsts` and `tpxes` invert; `tpors` returns two solutions or none at the plane edge.
     const reference = erfa.StandardCoordinates{ .a = 0.3, .b = 0.2 };
     const tangent_point = erfa.gnomonic.toStandardCoordinates(0.01, 0.02, reference);
     const recovered = erfa.gnomonic.fromStandardCoordinatesInverse(tangent_point, reference);
@@ -1428,8 +1323,7 @@ test "gnomonic: the tangent plane projection inverts" {
     try testing.expect(away.status.value > 0);
     try testing.expect(away.first != null and away.second != null);
 
-    // A reference point on the plane's edge gives a negative radicand, and
-    // upstream writes nothing at all in that case.
+    // A reference point on the plane edge gives no solutions.
     const on_the_plane = erfa.gnomonic.fromStandardCoordinates(
         0.01,
         0.02,
@@ -1458,8 +1352,7 @@ test "star catalogues: FK5 and Hipparcos are each other's inverse" {
     try expectNear(fk5.pm_dec, back.pm_dec, 1e-12);
     try expectNear(fk5.parallax, back.parallax, 1e-9);
 
-    // The epoch forms invert as well: `fk5hz` rotates by -t and `hfk5z` by
-    // +t, so the two rotations cancel exactly.
+    // The opposite epoch transforms cancel their `-t` and `+t` rotations.
     const date = erfa.Date2{ .part_a = 2400000.5, .part_b = 53736.0 };
     const dated = erfa.starCatalogs.fk5ToHipparcosAtDate(fk5.right_ascension, fk5.declination, date);
     const dated_back = erfa.starCatalogs.hipparcosToFk5AtDate(dated.right_ascension, dated.declination, date);
@@ -1470,11 +1363,8 @@ test "star catalogues: FK5 and Hipparcos are each other's inverse" {
 test "leap seconds: the thread-local initialiser keeps what the thread already has" {
     nativeReady();
 
-    // `eraDatini` decides on the thread's current count, not on the argument:
-    // a thread with nothing installed takes the caller's table, and the very
-    // next call on that thread ignores the argument entirely. This is the
-    // ownership rule that makes `setLeapSeconds` the only way to replace a
-    // table, and it is not observable through `getLeapSeconds` alone.
+    // `datini` installs its argument only when no positive-count table is active.
+    // A second call keeps the installed table; use `setLeapSeconds` to replace it.
     var replacement = [_]erfa.LeapSecond{.{ .iyear = 2000, .month = 1, .delat = 12.0 }};
     erfa.leap.setLeapSeconds(null);
     defer erfa.leap.setLeapSeconds(null);
@@ -1484,8 +1374,7 @@ test "leap seconds: the thread-local initialiser keeps what the thread already h
     const installed_entries = installed.entries orelse return error.MissingOutput;
     try expectNear(12.0, installed_entries[0].delat, 0.0);
 
-    // The count is positive now, so this call installs nothing and reports the
-    // table this thread already has.
+    // With a positive count, `datini(null)` retains the active table.
     const kept = erfa.leap.datini(null);
     try testing.expectEqual(@as(i32, 1), kept.status.value);
     try expectNear(12.0, (kept.entries orelse return error.MissingOutput)[0].delat, 0.0);
@@ -1494,11 +1383,7 @@ test "leap seconds: the thread-local initialiser keeps what the thread already h
 test "timescale: the periodic TDB-TT term is millisecond-scale" {
     nativeReady();
 
-    // `eraDtdb` is an approximation of the periodic terms of the TDB-TT
-    // relation and upstream says its own accuracy is a couple of milliseconds,
-    // so the claim checked here is that an observer on the Earth gets a
-    // sub-10-millisecond number rather than a seconds-scale or an undefined
-    // one.
+    // `eraDtdb` is a millisecond-scale approximation; check an Earth-observer result.
     const date = erfa.Date2{ .part_a = 2400000.5, .part_b = 53736.0 };
     for ([_][4]f64{
         .{ 0.0, 0.0, 4500.0, 1000.0 },
@@ -1514,13 +1399,10 @@ test "timescale: the periodic TDB-TT term is millisecond-scale" {
 test "fundamental arguments: the accumulated precession is zero at J2000.0" {
     nativeReady();
 
-    // General accumulated precession is defined to be zero at J2000.0, which
-    // is an independent mathematical statement about the argument rather than
-    // a number read back out of the library.
+    // Accumulated precession is zero at J2000.0.
     try expectNear(0.0, erfa.fundamentalArgs.accumulatedPrecession(0.0), 1e-15);
 
-    // The other thirteen are polynomials in Julian centuries, so they are
-    // finite at J2000.0 and grow with the interval.
+    // The other arguments are finite polynomials in Julian centuries.
     const at_j2000 = [_]f64{
         erfa.fundamentalArgs.d(0.0),
         erfa.fundamentalArgs.earthLongitude(0.0),
