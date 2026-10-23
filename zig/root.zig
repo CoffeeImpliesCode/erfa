@@ -134,7 +134,7 @@ pub const Ellipsoid = enum(c_int) {
 
     /// Return the C identifier used by the ellipsoid routines.
     pub fn id(self: Ellipsoid) c_int {
-        return @intFromEnum(self);
+        return @backingInt(self);
     }
 };
 

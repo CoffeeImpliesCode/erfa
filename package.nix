@@ -23,8 +23,8 @@ let
     && !(lib.hasPrefix "result-" name);
 in
 
-assert zig.version == "0.16.0" ||
-  builtins.throw "erfa: 'zig' must be pkgs.zig_0_16, got ${zig.version}";
+assert zig.version == "0.17.0" ||
+  builtins.throw "erfa: 'zig' must be pkgs.zig_0_17, got ${zig.version}";
 
 assert lib.elem linkage [ "static" "dynamic" ];
 

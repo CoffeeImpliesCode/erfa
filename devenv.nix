@@ -2,7 +2,7 @@
 { pkgs, lib, ... }:
 
 let
-  zig = pkgs.zig_0_16;
+  zig = pkgs.zig_0_17;
   mkErfa = linkage: pkgs.callPackage ./package.nix { inherit zig; inherit linkage; };
 
   # Tasks need the SDK root because devenv starts them in the caller's directory.
@@ -52,8 +52,8 @@ in
 
   assertions = [
     {
-      assertion = zig.version == "0.16.0";
-      message = "The ERFA SDK is pinned to Zig 0.16.0.";
+      assertion = zig.version == "0.17.0";
+      message = "The ERFA SDK is pinned to Zig 0.17.0.";
     }
   ];
 

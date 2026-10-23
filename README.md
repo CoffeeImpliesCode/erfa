@@ -1,7 +1,7 @@
 # ERFA
 
 ERFA provides the IAU's Essential Routines for Fundamental Astronomy.
-This Zig 0.16 package builds `liberfa/erfa` at commit `1a8044cde5b7763295d472a6443387239127c6c8` (ERFA 2.0.1, SOFA base 20231011); package version `2.0.1-dev.1a8044cd`.
+This Zig 0.17.0 package builds `liberfa/erfa` at commit `1a8044cde5b7763295d472a6443387239127c6c8` (ERFA 2.0.1, SOFA base 20231011); package version `2.0.1-dev.1a8044cd`.
 
 ## Source deviations
 
@@ -20,7 +20,7 @@ Every Zig executable or test root that imports the module must select LLVM with 
 | Build path | Target set |
 |---|---|
 | `zig build check` | Compile-only: `x86_64-linux-gnu`, `aarch64-linux-gnu`, `aarch64-macos-none`, `x86_64-windows-gnu`, `riscv64-linux-gnu`, `wasm32-wasi` |
-| `cross-test` | Zig 0.16.0 Tier 1/2 matrix: 53 targets. Runtime execution depends on an available executor; build-only coverage is not runtime coverage. |
+| `cross-test` | Zig 0.17.0 Tier 1/2 matrix: 53 targets. Runtime execution depends on an available executor; build-only coverage is not runtime coverage. |
 
 ## Consumption
 

@@ -94,7 +94,7 @@ const check_targets = [_]std.Target.Query{
 const Graph = struct {
     c_lib: *std.Build.Step.Compile,
     module: *std.Build.Module,
-    linkage: std.builtin.LinkMode,
+    linkage: std.lang.LinkMode,
     runtime_loaded: bool,
 };
 
@@ -133,8 +133,8 @@ fn shared_object_refusal(b: *std.Build, target: std.Build.ResolvedTarget) ?[]con
 fn resolved_linkage(
     b: *std.Build,
     target: std.Build.ResolvedTarget,
-    requested: std.builtin.LinkMode,
-) std.builtin.LinkMode {
+    requested: std.lang.LinkMode,
+) std.lang.LinkMode {
     if (requested == .dynamic) {
         if (shared_object_refusal(b, target)) |reason| std.debug.panic("erfa: {s}", .{reason});
     }
@@ -149,7 +149,7 @@ fn graph_prefix(b: *std.Build, target: std.Build.ResolvedTarget) []const u8 {
 fn delivered_artifact_name(
     b: *std.Build,
     target: std.Build.ResolvedTarget,
-    linkage: std.builtin.LinkMode,
+    linkage: std.lang.LinkMode,
 ) []const u8 {
     return switch (linkage) {
         .static => b.fmt("lib{s}.a", .{lib_name}),
@@ -260,9 +260,9 @@ fn preprocessedAggregate(
 
 const GraphOptions = struct {
     target: std.Build.ResolvedTarget,
-    optimize: std.builtin.OptimizeMode,
+    optimize: std.lang.Optimize,
     public: bool,
-    linkage: std.builtin.LinkMode,
+    linkage: std.lang.LinkMode,
     runtime_loaded: bool,
 };
 
@@ -352,7 +352,7 @@ fn addGraph(b: *std.Build, options: GraphOptions) Graph {
 fn addUpstreamProgram(
     b: *std.Build,
     target: std.Build.ResolvedTarget,
-    optimize: std.builtin.OptimizeMode,
+    optimize: std.lang.Optimize,
     graph: Graph,
     name: []const u8,
     source: []const u8,
@@ -376,7 +376,7 @@ fn artifactName(b: *std.Build, prefix: []const u8, base: []const u8) []const u8 
 fn addPrograms(
     b: *std.Build,
     target: std.Build.ResolvedTarget,
-    optimize: std.builtin.OptimizeMode,
+    optimize: std.lang.Optimize,
     graph: Graph,
     prefix: []const u8,
 ) Programs {
@@ -389,7 +389,7 @@ fn addPrograms(
         .link_libc = true,
     });
     test_mod.addImport(lib_name, facade);
-    // Zig 0.16 native Debug mispasses the wide ERFA C ABI. LLVM is required.
+    // Use LLVM for wide ERFA C signatures.
     const tests = b.addTest(.{ .root_module = test_mod, .use_llvm = true });
 
     const exercise_mod = b.createModule(.{
@@ -439,7 +439,14 @@ fn addPrograms(
 }
 
 fn readPackageFile(b: *std.Build, name: []const u8) []u8 {
-    return b.build_root.handle.readFileAlloc(b.graph.io, name, b.allocator, .limited(1 << 20)) catch |err| {
+    b.dependOnFileContents(b.path(name));
+    const file = b.root.openFile(b.graph.io, name, .{}) catch |err| {
+        std.debug.panic("cannot read {s}: {s}", .{ name, @errorName(err) });
+    };
+    defer file.close(b.graph.io);
+
+    var reader = file.reader(b.graph.io, &.{});
+    return reader.interface.allocRemaining(b.allocator, .limited(1 << 20)) catch |err| {
         std.debug.panic("cannot read {s}: {s}", .{ name, @errorName(err) });
     };
 }
@@ -485,8 +492,8 @@ fn addTargetCheck(
     b: *std.Build,
     step: *std.Build.Step,
     query: std.Target.Query,
-    optimize: std.builtin.OptimizeMode,
-    linkage: std.builtin.LinkMode,
+    optimize: std.lang.Optimize,
+    linkage: std.lang.LinkMode,
     runtime_loaded: bool,
 ) void {
     const target = b.resolveTargetQuery(query);
@@ -523,7 +530,7 @@ pub fn build(b: *std.Build) void {
 
     // Keep static as the default delivery.
     const requested_linkage = b.option(
-        std.builtin.LinkMode,
+        std.lang.LinkMode,
         "linkage",
         "Deliver the native library as a static archive (the default, and " ++
             "exactly what this package produced before the option existed) or " ++
@@ -577,7 +584,7 @@ pub fn build(b: *std.Build) void {
     const run_smoke = b.addRunArtifact(programs.smoke);
     run_smoke.has_side_effects = true;
     // Forward arguments after `--` to the smoke program.
-    if (b.args) |args| run_smoke.addArgs(args);
+    run_smoke.addPassthruArgs();
     b.step("smoke", "Run the smoke example").dependOn(&run_smoke.step);
 
     const consumer_mod = b.createModule(.{
@@ -594,7 +601,7 @@ pub fn build(b: *std.Build) void {
     const run_consumer = b.addRunArtifact(consumer);
     run_consumer.has_side_effects = true;
     // Forward arguments after `--` to the consumer.
-    if (b.args) |args| run_consumer.addArgs(args);
+    run_consumer.addPassthruArgs();
     b.step("consumer", "Run the module consumer").dependOn(&run_consumer.step);
 
     const run_tests = b.addRunArtifact(programs.tests);

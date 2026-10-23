@@ -1,9 +1,9 @@
 
 {
-  description = "ERFA — Essential Routines for Fundamental Astronomy, packaged for Zig 0.16";
+  description = "ERFA — Essential Routines for Fundamental Astronomy, packaged for Zig 0.17";
 
   inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/c7def046b9a883d46974757852106483d741586f";
+    nixpkgs.url = "github:NixOS/nixpkgs/02c087f3fe673c9e317f206a627cb6b910336dbe";
   };
 
   outputs =
@@ -17,7 +17,7 @@
       ];
       forAllSystems = f: nixpkgs.lib.genAttrs systems (system: f nixpkgs.legacyPackages.${system});
       mkErfa = pkgs: linkage: pkgs.callPackage ./package.nix {
-        zig = pkgs.zig_0_16;
+        zig = pkgs.zig_0_17;
         inherit linkage;
       };
     in
@@ -29,7 +29,7 @@
       });
 
       devShells = forAllSystems (pkgs: {
-        default = pkgs.mkShell { packages = [ pkgs.zig_0_16 ]; };
+        default = pkgs.mkShell { packages = [ pkgs.zig_0_17 ]; };
       });
     };
 }

@@ -2,7 +2,7 @@
     .name = .erfa,
     .version = "2.0.1-dev.1a8044cd",
     .fingerprint = 0x73dbf9fce1bf2002, // Changing this has security and trust implications.
-    .minimum_zig_version = "0.16.0",
+    .minimum_zig_version = "0.17.0",
 
     .dependencies = .{},
 

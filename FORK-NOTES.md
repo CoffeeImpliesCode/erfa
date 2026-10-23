@@ -11,6 +11,8 @@ No upstream `.c` or `.h` files are modified.
 ## Build graph
 
 - The build compiles the 249 upstream C translation units directly; it runs neither autotools nor Meson and downloads no source.
+- Zig 0.17's `Build.root` is a `Cache.Path`; pkg-config generation tracks `erfa.pc.in` with `dependOnFileContents` and reads it through `openFile`/`Io.Reader.allocRemaining`.
+- Runtime dispatch generation uses Zig 0.17's lowercase `.debug` optimize tag.
 - It generates `config.h` in the build cache from upstream's `2.0.1` package version and `20231011` SOFA version. `HAVE_CONFIG_H` and the generated include directory reach both C compilation and header translation.
 - `zig/translate.h` is the translation input for all four public headers. Non-NetBSD targets use Aro preprocessing; NetBSD targets run the target compiler's `zig cc -E -dD` first so Aro receives expanded declarations and preserved macros.
 - `zig/translate.h` defines `__int128_t` and `__uint128_t` under `__SIZEOF_INT128__` for target headers that name the compiler-provided types.
