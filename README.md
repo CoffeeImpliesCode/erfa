@@ -24,12 +24,10 @@ Every Zig executable or test root that imports the module must select LLVM with 
 
 ## Consumption
 
-For a consumer beside this checkout, add this dependency to `build.zig.zon`:
+Fetch the GitHub dependency into the consumer's `build.zig.zon`:
 
-```zig
-.dependencies = .{
-    .erfa = .{ .path = "../erfa" },
-},
+```sh
+zig fetch --save git+https://github.com/CoffeeImpliesCode/erfa#v2.0.1-dev.1a8044cd
 ```
 
 Import the `erfa` module in the consumer's build graph. The module links the native library for the linked configuration.
